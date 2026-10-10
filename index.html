@@ -1583,9 +1583,10 @@ function paintThinking(el, it) {
 // expandable command or diff. Tap the row to expand; file chips open the file viewer.
 function renderTool(el, it) {
   const icon = ICON[it.kind] || ICON.other;
+  const fileRef = (f, r) => f + (r ? ':' + ((String(r).match(/\d+/) || [''])[0]) : '');
   const chips = (it.chips || []).map(c => {
     const isFile = it.f && (c === it.f || c.startsWith(it.f + ' ') || c.startsWith(it.f + '#'));
-    return `<code class="chip"${isFile ? ` data-file="${esc(it.f)}"` : ''}>${esc(c)}${isFile && it.r ? ' ' + esc(it.r) : ''}</code>`;
+    return `<code class="chip"${isFile ? ` data-file="${esc(fileRef(it.f, it.r))}"` : ''}>${esc(c)}${isFile && it.r ? ' ' + esc(it.r) : ''}</code>`;
   }).join('');
   if (it.kind === 'command') {
     const cmd = it.cmd || '';
@@ -2235,7 +2236,7 @@ function renderTermLine(line, caretAt) {
 function renderTerm(m) {
   const box = $('termText');
   if (!m.lines) {
-    termState = 'empty';
+    termState = m.img ? 'img' : 'empty';
     box.textContent = '';
     updateTermEmpty();
     return;
