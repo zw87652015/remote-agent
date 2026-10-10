@@ -496,6 +496,7 @@
     <button id="pickAgents" title="切换电脑上的 Agent">Agent</button>
     <!-- 旧版输入框旁的对话历史。Agents 和 Devin 改由左侧会话列表切换，见 README。 -->
     <button id="pickHistory" hidden>历史</button>
+    <button id="pickDir" hidden></button>
     <button id="newChat">＋ 新建</button>
   </div>
   <div id="attStrip" hidden></div>
@@ -1084,6 +1085,7 @@ function connect() {
       })();
     }
     else if (m.t === 'trunc') scTrunc(m.from);
+    else if (m.t === 'workdirs') showWorkdirs(m);
     else if (m.t === 'uploadAck') upAcks.get(`${m.id}:${m.seq}`)?.(m);
     else if (m.t === 'uploaded') {
       text.value = `${text.value}${text.value && !text.value.endsWith('\n') ? '\n' : ''}Uploaded file: ${m.path}\n`;
@@ -1463,6 +1465,15 @@ $('sheet').addEventListener('click', async e => {
       return showCacheSheet();
     }
   }
+  if (b.dataset.wd != null) {
+    const r = $('sheet')._wd?.[Number(b.dataset.wd)];
+    if (!r) return;
+    if (r.name !== workdir?.name && !await ask(`把 Devin 的工作目录换成「${r.name}」？\nDevin 会切换工作区并重新载入这个文件夹，需要几秒钟，正在运行的任务可能被打断。`, '更换')) return;
+    closeSheet();
+    status('正在更换工作目录…');
+    return send({ t: 'workdirPick', name: r.name, path: r.path });
+  }
+  if (b.dataset.env) { closeSheet(); status('正在更换运行位置…'); return send({ t: 'envPick', label: b.dataset.env }); }
   if (b.dataset.scHit) {
     const key = b.dataset.scHit, id = b.dataset.scId;
     if (key === SC.key) { closeSheet(); scJump(id); return; }
@@ -2193,6 +2204,31 @@ function syncChildren(parent, els) {
   while (parent.children.length > els.length) parent.lastElementChild.remove();
 }
 // Pictures / files attached to Devin's prompt, with an x that takes them off again.
+// Devin's working directory (Agent view). Changeable only on a new session, before the first message.
+let workdir = null, wantDir = false;
+function paintWorkdir(wd) {
+  workdir = wd || null;
+  const b = $('pickDir');
+  b.hidden = !wd;
+  if (!wd) return;
+  b.textContent = `📁 ${wd.name}${wd.extra ? ' ' + wd.extra : ''} ▾`;
+  b.title = wd.editable ? '更换工作目录' : '这个会话的工作目录';
+  if (wantDir && wd.editable) { wantDir = false; send({ t: 'workdir' }); }
+}
+$('pickDir').onclick = async () => {
+  if (!workdir) return;
+  if (workdir.editable) return send({ t: 'workdir' });
+  if (!await ask('工作目录只能在新会话发出第一条消息之前更换。\n现在新建一个对话来更换吗？', '新建')) return;
+  wantDir = true;
+  send({ t: 'newChat' });
+};
+function showWorkdirs(m) {
+  const cur = m.info?.name;
+  const envs = ['Local', 'Worktree', 'Cloud'].map(e => `<button class="opt ${e === m.info?.env ? 'cur' : ''}" data-env="${e}" style="flex:1;justify-content:center"><span class="lbl">${e === 'Local' ? '本地' : e === 'Worktree' ? 'Worktree' : '云端'}</span></button>`).join('');
+  const rows = m.rows.map((r, i) => `<button class="opt ${r.name === cur ? 'cur' : ''}" data-wd="${i}"><span class="lbl">${esc(r.name)}<span class="sub">${esc(r.path)}</span></span>${r.name === cur ? '<span class="tag">当前</span>' : ''}</button>`).join('');
+  openSheet('workdir', `<h3>工作目录</h3><div class="pSec">运行位置</div><div class="pRow" style="display:flex;gap:6px;margin-bottom:8px">${envs}</div><div class="pSec">文件夹</div>${rows || '<div class="hint">没有读到文件夹列表。</div>'}<div class="hint">要选列表里没有的文件夹，请在电脑上点「Browse…」。</div>`);
+  $('sheet')._wd = m.rows;
+}
 let attSig = '';
 function renderAttachments(list) {
   const sig = JSON.stringify((list || []).map(a => [a.i, a.alt, a.thumb?.length || 0]));
@@ -2211,6 +2247,7 @@ $('attStrip').onclick = e => {
 function renderChat(chat) {
   lastChat = chat;
   renderAttachments(chat?.attachments);
+  paintWorkdir(chat?.workdir);
   if (chat && 'context' in chat) renderContext(chat.context);
   $('empty').hidden = !!chat;
   $('older').hidden = !chat || chat.earlier === false;
