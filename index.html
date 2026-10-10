@@ -178,6 +178,9 @@
   #taskChip { margin: 6px 10px; font-size: 12px; }
   #sessBar { flex: none; display: flex; gap: 6px; padding: 6px 10px; overflow-x: auto; background: var(--panel); border-bottom: 1px solid var(--line); -webkit-overflow-scrolling: touch; }
   #sessBar[hidden] { display: none; }
+  #sessBar .sessTab { flex: none; display: inline-flex; align-items: stretch; }
+  #sessBar .sessX { flex: none; padding: 0 7px; margin-left: -4px; border-radius: 0 20px 20px 0; font-size: 11px; color: var(--muted); background: none; border-left: 0; }
+  #sessBar .sessX:active { color: var(--err); }
   #sessBar .sessChip { flex: none; max-width: 52vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; padding: 4px 10px; color: var(--muted); }
   #sessBar .sessChip.on { color: var(--hi); border-color: var(--accent-b); background: var(--ctrl); }
   .surfSeg { display: inline-flex; border: 1px solid var(--line2); border-radius: 8px; overflow: hidden; flex: none; }
@@ -1854,11 +1857,17 @@ function paintSessions(chat) {
   }
   const tabs = s?.tabs || [];
   bar.hidden = !s || !tabs.length;
-  bar.innerHTML = tabs.map(t => `<button class="sessChip ${t.active ? 'on' : ''}" data-sess="${esc(t.title)}" title="${esc(t.title)}">${esc(t.title)}</button>`).join('');
+  bar.innerHTML = tabs.map(t => `<span class="sessTab ${t.active ? 'on' : ''}"><button class="sessChip ${t.active ? 'on' : ''}" data-sess="${esc(t.title)}" title="${esc(t.title)}">${esc(t.title)}</button>${tabs.length > 1 ? `<button class="sessX" data-sessx="${esc(t.title)}" title="关闭会话标签" aria-label="关闭会话标签">✕</button>` : ''}</span>`).join('');
   bar.querySelector('.on')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   return changed;
 }
-$('sessBar').onclick = e => {
+$('sessBar').onclick = async e => {
+  const x = e.target.closest('[data-sessx]');
+  if (x) {
+    if (!await ask(`关闭会话标签「${x.dataset.sessx}」？\n会话本身不会删除，之后还能从「会话」里重新打开。`, '关闭')) return;
+    status('正在关闭会话标签…');
+    return send({ t: 'closeTab', title: x.dataset.sessx });
+  }
   const b = e.target.closest('[data-sess]');
   if (!b || b.classList.contains('on')) return;
   status('正在切换会话…');
