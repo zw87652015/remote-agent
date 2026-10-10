@@ -1604,7 +1604,8 @@ function setMode(m) {
 $('tabChat').onclick = () => setMode('chat');
 $('tabTerm').onclick = () => setMode('terminal');
 
-// Swipe between the chat and the terminal. A mostly vertical move keeps scrolling.
+// Swipe from the terminal back to the chat (left to right). The chat never swipes to the terminal: use the tab.
+// A mostly vertical move keeps scrolling.
 let swipe = null;
 document.querySelector('main').addEventListener('touchstart', e => {
   swipe = null;
@@ -1635,8 +1636,7 @@ document.querySelector('main').addEventListener('touchend', e => {
     if (dx > 0 && term.scrollLeft > 2) return;
     if (dx < 0 && term.scrollLeft + term.clientWidth < term.scrollWidth - 2) return;
   }
-  if (dx < 0 && mode === 'chat') setMode('terminal');
-  else if (dx > 0 && mode === 'terminal') setMode('chat');
+  if (dx > 0 && mode === 'terminal') setMode('chat');
 });
 document.querySelector('main').addEventListener('touchcancel', () => { swipe = null; });
 
