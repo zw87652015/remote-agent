@@ -440,6 +440,8 @@ let mode = store.get('mode') || 'chat';
 let crop = store.get('crop') !== 'full';
 let frame = { w: 1000, h: 800 }, panel = null, zoom = 1;
 let windows = [], currentWindow = null;
+// Which desktop app the relay is attached to ('cursor' | 'devin' | null).
+let currentApp = null;
 
 // iOS scrolls the page to reveal the focused field, which throws the chat off screen.
 // Pin the shell to the visible area above the keyboard instead.
@@ -914,10 +916,11 @@ function connect() {
       const here = currentComputer();
       if (here) rememberComputer({ ...here, win: m.id });
       currentWindow = m.id;
-      $('titleText').textContent = m.app === 'devin' ? 'Devin agent' : winLabel(m.title).name;
-      $('text').placeholder = m.app === 'devin' ? '发给 Devin…' : '发给 Cursor Agent…';
+      currentApp = m.app || null;
+      $('titleText').textContent = currentApp === 'devin' ? 'Devin agent' : winLabel(m.title).name;
+      $('text').placeholder = currentApp === 'devin' ? '发给 Devin…' : '发给 Cursor Agent…';
       renderChat(null);
-      if (m.app === 'devin') {
+      if (currentApp === 'devin') {
         renderQuota({ bars: [] });
         renderContext(null);
       } else send({ t: 'usage' });
@@ -1104,7 +1107,8 @@ function showSettings(sections) {
     if (it.toggle === false) return `<div class="opt static">${label}</div>`;
     return `<button class="opt" data-setting="${esc(it.label)}">${label}<span class="switch ${it.on ? 'on' : ''}"></span></button>`;
   }).join('')).join('');
-  openSheet('settings', `<h3>设置</h3>${body || '<div class="hint">没有读到设置。</div>'}`);
+  const appName = currentApp === 'devin' ? 'Devin' : currentApp === 'cursor' ? 'Cursor' : '';
+  openSheet('settings', `<h3>${appName ? appName + ' 设置' : '设置'}</h3>${body || '<div class="hint">没有读到设置。</div>'}`);
 }
 function meterFill(pct) {
   if (pct == null) return '';
@@ -1140,12 +1144,15 @@ function showMainMenu() {
   const update = apkUpdate()
     ? `<button class="opt" data-act="appUpdate"><span class="lbl">更新安卓 App（v${esc(appVersion)} → v${esc(apkUpdate())}）</span><span class="tag">新</span></button>`
     : `<button class="opt" data-act="appUpdate"><span class="lbl">检查 App 更新（当前 v${esc(appVersion)}）</span></button>`;
+  const appName = currentApp === 'devin' ? 'Devin' : currentApp === 'cursor' ? 'Cursor' : '';
   openSheet('main', `<h3>菜单</h3>
+    ${appName ? `<div class="pSec">${appName}</div>` : ''}
     <button class="opt" data-act="model"><span class="lbl">更换模型<span class="sub" id="menuModel">${esc(lastChat?.model || '选择当前 Agent 的模型')}</span></span></button>
     <button class="opt" data-act="projects"><span class="lbl">打开项目<span class="sub">最近用过的本地文件夹</span></span></button>
     <button class="opt" data-act="docs"><span class="lbl">查看文档<span class="sub">README 和代码</span></span></button>
-    <button class="opt" data-act="settings"><span class="lbl">设置</span></button>
-    <button class="opt" data-act="screen"><span class="lbl">画面<span class="sub">直接看电脑上的 Cursor</span></span></button>
+    <button class="opt" data-act="settings"><span class="lbl">${appName ? appName + ' 设置' : '设置'}</span></button>
+    <button class="opt" data-act="screen"><span class="lbl">画面<span class="sub">直接看电脑上的 ${appName || 'Cursor'}</span></span></button>
+    <div class="pSec">此手机 App</div>
     ${notifyItem}
     ${inApp && appVersion ? update : ''}
     ${inApp ? '<button class="opt" data-act="changeUrl"><span class="lbl">更换 App 地址</span></button>' : ''}
@@ -1453,7 +1460,7 @@ function setMode(m) {
   $('screenKeys').hidden = m === 'terminal';
   view.classList.toggle('gesture', m === 'screen' || m === 'terminal');
   document.body.classList.toggle('term', m === 'terminal');
-  text.placeholder = m === 'terminal' ? '发给终端…' : '发给 Cursor Agent…';
+  text.placeholder = m === 'terminal' ? '发给终端…' : currentApp === 'devin' ? '发给 Devin…' : '发给 Cursor Agent…';
   if (m !== 'terminal') $('termBusy').hidden = true;
   sentWidth = 0;
   if (authed) send({ t: 'mode', mode: m });
@@ -1559,7 +1566,7 @@ function paintThinking(el, it) {
   let btn = el.querySelector('.thbtn');
   let box = el.querySelector('.thb');
   if (!btn || !box) {
-    el.innerHTML = `<button type="button" class="thbtn" data-think="">${ICON.brain}<span class="tht"></span><span class="tha"></span></button><div class="thb"></div>`;
+    el.innerHTML = `<button type="button" class="thbtn" data-think="">${it.src === 'devin' ? ICON.brain : ''}<span class="tht"></span><span class="tha"></span></button><div class="thb"></div>`;
     btn = el.querySelector('.thbtn');
     box = el.querySelector('.thb');
   }
@@ -1607,7 +1614,7 @@ function renderItem(it) {
   else if (it.k === 'assistant') { el.innerHTML = it.h || ''; dressMessage(el); }
   else if (it.k === 'thinking') paintThinking(el, it);
   else if (it.k === 'tool') {
-    if (it.kind) { renderTool(el, it); el.classList.add('toolrow'); }
+    if (it.kind && it.src === 'devin') { renderTool(el, it); el.classList.add('toolrow'); }
     else {
       el.innerHTML = `<div class="txt">${esc(it.t || '')}</div>`;
       if (it.f) el.dataset.file = it.f;
@@ -1662,7 +1669,7 @@ function renderChat(chat) {
   lastChat = chat;
   if (chat && 'context' in chat) renderContext(chat.context);
   $('empty').hidden = !!chat;
-  $('older').hidden = !chat;
+  $('older').hidden = !chat || chat.earlier === false;
   $('pickMode').hidden = !chat?.mode;
   $('pickModel').hidden = false;
   if (chat?.mode) $('pickMode').textContent = chat.mode + ' ▾';
