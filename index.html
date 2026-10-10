@@ -184,7 +184,13 @@
   .surfSeg[hidden] { display: none; }
   .surfSeg button { border: 0; border-radius: 0; background: none; color: var(--muted); padding: 4px 9px; font-size: 12px; }
   .surfSeg button.on { background: var(--ctrl); color: var(--hi); }
-  .msg.human .rv { display: flex; align-self: center; margin-left: 6px; }
+  .msg.human .rv { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; align-self: center; margin-left: 6px; }
+  .foldBtn { font-size: 12px; padding: 0 8px; line-height: 1.5; background: none; border: 1px solid var(--line); color: var(--muted); }
+  .turnSum { font-size: 11px; color: var(--muted); text-align: right; }
+  .turnSum:empty { display: none; }
+  #cachedMore { display: block; margin: 0 auto 10px; font-size: 13px; color: var(--muted2); background: transparent; }
+  #cachedMore[hidden] { display: none; }
+  #items > .msg { content-visibility: auto; contain-intrinsic-size: auto 72px; }
   .revertBtn { font-size: 11px; padding: 2px 8px; color: var(--muted); background: none; border: 1px solid var(--line); }
   #taskChip span { color: var(--muted); }
   .sheetTasks li { display: flex; gap: 8px; padding: 4px 2px; }
@@ -198,7 +204,8 @@
   .btns button { font-size: 13px; padding: 5px 10px; }
   .btns button.primary { font-weight: 600; }
   #empty { color: var(--muted); text-align: center; margin-top: 30vh; padding: 0 20px; }
-  #toBottom { position: absolute; right: 14px; bottom: 12px; border-radius: 20px; padding: 6px 12px; background: var(--float); display: none; }
+  #listWrap { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; }
+  #toBottom { position: absolute; z-index: 2; right: 14px; bottom: 12px; border-radius: 20px; padding: 6px 12px; background: var(--float); display: none; }
   #actionBar { flex: none; display: none; gap: 8px; flex-wrap: wrap; padding: 8px 12px; background: var(--bar); border-top: 1px solid var(--line); }
   #actionBar.show { display: flex; }
   #actionBar button { flex: 1; padding: 9px; font-weight: 600; }
@@ -236,6 +243,8 @@
   #queueBar .q .qt.sa::before { content: "⇢ "; color: var(--hl); }
   #queueBar .run.sub { color: var(--warn); }
   #queueBar button { font-size: 12px; padding: 3px 9px; flex: none; }
+  #queueBar button.ib { display: inline-flex; align-items: center; justify-content: center; padding: 5px 8px; line-height: 0; }
+  #queueBar button.ib.del:active, #queueBar button.ib.del:hover { color: var(--err); }
 
   /* screen view */
   .tools { flex: none; display: flex; gap: 6px; padding: 6px 8px; overflow-x: auto; scrollbar-width: none; background: var(--panel); border-bottom: 1px solid var(--line); min-width: 0; }
@@ -384,13 +393,16 @@
       <div id="quotaMeters"></div>
     </div>
     <div id="sessBar" hidden></div>
+    <div id="listWrap">
     <div id="list">
       <button id="older">↑ 加载更早的消息</button>
+      <button id="cachedMore" hidden></button>
       <button id="taskChip" hidden></button>
       <div id="items"></div>
       <div id="empty" hidden>没找到聊天面板。<br>请在 Cursor 里打开 Agent 对话，或切到「画面」查看。</div>
     </div>
     <button id="toBottom">↓ 最新</button>
+    </div>
     <div id="qnBar"></div>
     <div id="queueBar"></div>
     <div id="actionBar"></div>
@@ -1013,7 +1025,19 @@ function connect() {
     else if (m.t === 'file') showFile(m);
     else if (m.t === 'thought') onThought(m);
     else if (m.t === 'revertConfirm') {
-      ask(m.title ? `${m.title}${m.body ? '\n' + m.body : ''}` : '确认回退？', '确认回退').then(ok => send({ t: ok ? 'revertOk' : 'revertCancel' }));
+      (async () => {
+        const ok = await ask(m.title ? `${m.title}${m.body ? '\n' + m.body : ''}` : '确认回退？', '确认回退');
+        if (!ok) return send({ t: 'revertCancel' });
+        const apply = m.apply === null || m.apply === undefined ? undefined : await ask('同时撤销这些文件改动吗？\n取消 = 只回退对话，保留文件', '撤销文件');
+        send({ t: 'revertOk', ...(apply === undefined ? {} : { apply }) });
+      })();
+    }
+    else if (m.t === 'trunc') scTrunc(m.from);
+    else if (m.t === 'unqueued') {
+      text.value = text.value.trim() ? `${text.value.replace(/\s+$/, '')}\n${m.text}` : m.text;
+      autosize();
+      text.focus();
+      status('已取出，放回输入框');
     }
     else if (m.t === 'saved') onSaved(m);
     else if (m.t === 'status') { clearSwitchWatch(); status(m.msg, m.ok); }
@@ -1245,6 +1269,7 @@ function showMainMenu() {
     <button class="opt" data-act="reconnect"><span class="lbl">重新连接</span></button>
     <button class="opt" data-act="voice"><span class="lbl">语音按钮<span class="sub">输入法键盘自带麦克风的话用不着</span></span><span class="switch ${store.get('voice') === 'on' ? 'on' : ''}"></span></button>
     <button class="opt" data-act="theme"><span class="lbl">主题<span class="sub">深色 / 浅色 / 跟随系统（当前：${themeName()}）</span></span></button>
+    <button class="opt" data-act="cache"><span class="lbl">会话缓存<span class="sub">手机上保存的对话记录，可折叠、可清除</span></span></button>
     <button class="opt" data-act="lang"><span class="lbl">语言 / Language<span class="sub">中文 · English（${I18N.lang === 'en' ? 'English' : '中文'}）</span></span></button>
     <button class="opt" data-act="computers"><span class="lbl">电脑<span class="sub">${esc(currentComputer()?.name || '未配对')}</span></span></button>
     <button class="opt" data-act="devices"><span class="lbl">已配对设备</span></button>
@@ -1369,6 +1394,21 @@ document.addEventListener('visibilitychange', () => {
 $('sheet').addEventListener('click', async e => {
   const b = e.target.closest('button');
   if (!b) return;
+  if (b.dataset.sc) {
+    if (b.dataset.sc === 'fold' || b.dataset.sc === 'unfold') { scFold('*', b.dataset.sc === 'fold'); return showCacheSheet(); }
+    if (b.dataset.sc === 'clearAll') {
+      if (!await ask('清除手机上保存的全部会话缓存？\n电脑上的对话不受影响。', '清除')) return;
+      for (const k of ((await scKeys()) || []).map(String)) await scDel(k);
+      SC.items = new Map(); SC.sig = new Map(); SC.collapsed = new Set(); SC.dirty = false;
+      if (lastChat) renderChat(lastChat);
+      return showCacheSheet();
+    }
+  }
+  if (b.dataset.scDel) {
+    if (!await ask('清除这个会话在手机上的缓存？\n电脑上的对话不受影响。', '清除')) return;
+    await scClear(b.dataset.scDel);
+    return showCacheSheet();
+  }
   if (b.dataset.win) { closeSheet(); return send({ t: 'attach', id: b.dataset.win }); }
   if (b.dataset.agent) { closeSheet(); status('正在切换 Agent…'); return send({ t: 'openAgent', id: b.dataset.agent }); }
   if (b.dataset.term) { closeSheet(); status('正在切换终端…'); return send({ t: 'openTerminal', id: b.dataset.term }); }
@@ -1439,6 +1479,7 @@ $('sheet').addEventListener('click', async e => {
     send({ t: 'appTheme', dark: document.documentElement.dataset.theme !== 'light' });
     showMainMenu();
   }
+  else if (act === 'cache') showCacheSheet();
   else if (act === 'lang') I18N.set(I18N.lang === 'en' ? 'zh' : 'en');
   else if (act === 'computers') showComputers();
   else if (act === 'addComputer') addComputer();
@@ -1599,7 +1640,10 @@ document.querySelector('main').addEventListener('touchcancel', () => { swipe = n
 /* ---------- chat view ---------- */
 const list = $('list'), itemsEl = $('items');
 const cache = new Map();
+$('cachedMore').onclick = () => { SC.show += 400; if (lastChat) renderChat(lastChat); };
 itemsEl.addEventListener('click', async e => {
+  const fold = e.target.closest('[data-fold]');
+  if (fold) return scFold(fold.dataset.fold);
   const rv = e.target.closest('[data-revert]');
   if (rv) {
     if (!await ask('回退到这条消息？之后的对话和文件改动会被撤销。', '回退')) return;
@@ -1734,7 +1778,7 @@ function renderItem(it) {
   if (it.k === 'tasks') { el.innerHTML = `<div class="tcard"><div class="tprog-head">${I18N.tr('任务')} ${it.done}/${it.total}</div>${tasksHtml(it)}</div>`; return el; }
   if (it.k === 'human') {
     el.innerHTML = `<div class="bubble">${esc(it.t || '')}</div>`;
-    if (it.src === 'devin') el.insertAdjacentHTML('beforeend', `<div class="rv"><button class="revertBtn" data-revert="${esc(it.i)}">回到这里</button></div>`);
+    if (it.src === 'devin') el.insertAdjacentHTML('beforeend', `<div class="rv"><button class="foldBtn" data-fold="${esc(it.i)}" title="折叠这一轮">▾</button><span class="turnSum"></span><button class="revertBtn" data-revert="${esc(it.i)}">回到这里</button></div>`);
   }
   // it.h comes from the whitelist sanitizer in server.mjs (pageHelpers.clean): plain tags only, text escaped.
   else if (it.k === 'assistant') { el.innerHTML = it.h || ''; dressMessage(el); }
@@ -1804,6 +1848,7 @@ function paintSessions(chat) {
     thoughtFull.clear();
     qnSig = '';
     latestTasks = null;
+    scSwitch(key);
     itemsEl.replaceChildren();
     list.scrollTop = list.scrollHeight;
   }
@@ -1819,6 +1864,141 @@ $('sessBar').onclick = e => {
   status('正在切换会话…');
   send({ t: 'openAgent', id: `tab:${b.dataset.sess}` });
 };
+// ---- local per-session history (Devin) ----
+// The relay only remembers what it has seen since it started (and caps it), so the phone keeps its own copy of
+// every row of every session: merged by item id, stored in IndexedDB, dropped only when the user clears it.
+const SC = { key: null, items: new Map(), sig: new Map(), collapsed: new Set(), show: 400, dirty: false, timer: 0 };
+const SC_MAX = 8000;
+const acpNum = id => { const m = /^acp(\d+)/.exec(id || ''); return m ? Number(m[1]) : -1; };
+let scDbP = null;
+function scDb() {
+  if (!scDbP) scDbP = new Promise((res, rej) => {
+    if (!window.indexedDB) return rej(new Error('no indexedDB'));
+    const r = indexedDB.open('cr-sessions', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('s');
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+  return scDbP;
+}
+const scReq = (mode, fn) => scDb().then(db => new Promise((res, rej) => {
+  const rq = fn(db.transaction('s', mode).objectStore('s'));
+  rq.onsuccess = () => res(rq.result);
+  rq.onerror = () => rej(rq.error);
+})).catch(() => null);
+const scGet = k => scReq('readonly', s => s.get(k));
+const scPut = (k, v) => scReq('readwrite', s => s.put(v, k));
+const scDel = k => scReq('readwrite', s => s.delete(k));
+const scKeys = () => scReq('readonly', s => s.getAllKeys());
+const scKeyFor = sess => `${currentComputer()?.id || '-'}|${currentApp || '?'}|${sess}`;
+// A newer copy of a row replaces the stored one, except where the stored one holds more (thought text, task items).
+function scKeep(prev, it) {
+  if (!prev) return it;
+  if (it.k === 'thinking' && prev.k === 'thinking') {
+    const body = t => (t || '').split('\n').slice(1).join('\n');
+    if (body(prev.t).length > body(it.t).length) { const m = { ...it, t: prev.t }; delete m.more; return m; }
+  }
+  if (it.k === 'tasks' && prev.k === 'tasks' && prev.items && !it.items) return { ...it, items: prev.items };
+  return it;
+}
+function scFlush() {
+  clearTimeout(SC.timer);
+  SC.timer = 0;
+  if (!SC.key || !SC.dirty) return;
+  SC.dirty = false;
+  let items = [...SC.items.values()].sort((a, b) => acpNum(a.i) - acpNum(b.i));
+  if (items.length > SC_MAX) items = items.slice(-SC_MAX);
+  const k = SC.key;
+  scPut('h:' + k, { items, collapsed: [...SC.collapsed] });
+  scPut('m:' + k, { n: items.length, bytes: JSON.stringify(items).length, updated: Date.now() });
+}
+function scDirty() {
+  SC.dirty = true;
+  if (!SC.timer) SC.timer = setTimeout(scFlush, 3000);
+}
+document.addEventListener('visibilitychange', () => { if (document.hidden) scFlush(); });
+addEventListener('pagehide', scFlush);
+function scSwitch(sess) {
+  scFlush();
+  SC.key = sess ? scKeyFor(sess) : null;
+  SC.items = new Map(); SC.sig = new Map(); SC.collapsed = new Set(); SC.show = 400;
+  const k = SC.key;
+  if (!k) return;
+  scGet('h:' + k).then(v => {
+    if (SC.key !== k || !v) return;
+    for (const it of v.items || []) {
+      const cur = SC.items.get(it.i);
+      SC.items.set(it.i, cur ? scKeep(it, cur) : it);
+    }
+    for (const c of v.collapsed || []) SC.collapsed.add(c);
+    if (lastChat) renderChat(lastChat);
+  });
+}
+// Merge what the relay sent into the stored session and return what to draw: all rows (older ones windowed
+// to SC.show), minus the replies of folded turns. A turn is a user message plus everything up to the next one.
+function scMerge(chat) {
+  if (!SC.key) return { items: chat.items, all: chat.items, older: 0, stat: null };
+  let changed = false;
+  for (const it of chat.items) {
+    const sig = JSON.stringify(it);
+    if (SC.sig.get(it.i) === sig && SC.items.has(it.i)) continue;
+    SC.sig.set(it.i, sig);
+    SC.items.set(it.i, scKeep(SC.items.get(it.i), it));
+    changed = true;
+  }
+  if (changed) scDirty();
+  const all = [...SC.items.values()].sort((a, b) => acpNum(a.i) - acpNum(b.i));
+  const stat = new Map(), turnOf = new Map();
+  let turn = null;
+  for (const it of all) {
+    if (it.k === 'human') { turn = it.i; stat.set(turn, { n: 0, tools: 0 }); }
+    else if (turn) { const s = stat.get(turn); s.n++; if (it.k === 'tool') s.tools++; }
+    turnOf.set(it.i, turn);
+  }
+  let items = all.filter(it => it.k === 'human' || !SC.collapsed.has(turnOf.get(it.i)));
+  let older = 0;
+  if (items.length > SC.show) { older = items.length - SC.show; items = items.slice(-SC.show); }
+  return { items, all, older, stat };
+}
+function scFold(turn, to) {
+  if (!SC.key) return;
+  const want = to ?? !SC.collapsed.has(turn);
+  if (turn === '*') {
+    SC.collapsed = new Set(want ? [...SC.items.values()].filter(it => it.k === 'human').map(it => it.i) : []);
+  } else if (want) SC.collapsed.add(turn); else SC.collapsed.delete(turn);
+  scDirty();
+  if (lastChat) renderChat(lastChat);
+}
+// The desktop rewound the session (revert): rows from `from` on no longer exist, here or on the computer.
+function scTrunc(from) {
+  if (!SC.key || !(from >= 0)) return;
+  for (const k of [...SC.items.keys()]) if (acpNum(k) >= from) { SC.items.delete(k); SC.sig.delete(k); }
+  for (const c of [...SC.collapsed]) if (acpNum(c) >= from) SC.collapsed.delete(c);
+  scDirty();
+  if (lastChat) renderChat(lastChat);
+}
+async function scClear(key) {
+  await scDel('h:' + key);
+  await scDel('m:' + key);
+  if (key === SC.key) {
+    SC.items = new Map(); SC.sig = new Map(); SC.collapsed = new Set(); SC.dirty = false;
+    if (lastChat) renderChat(lastChat);
+  }
+}
+async function showCacheSheet() {
+  scFlush();
+  const keys = ((await scKeys()) || []).map(String).filter(k => k.startsWith('m:')).map(k => k.slice(2));
+  const rows = (await Promise.all(keys.map(async k => ({ k, m: await scGet('m:' + k) })))).filter(x => x.m).sort((a, b) => b.m.updated - a.m.updated);
+  const list = rows.map(({ k, m }) => {
+    const [, app, ...rest] = k.split('|');
+    return `<div class="optRow"><button class="opt ${k === SC.key ? 'cur' : ''}" data-sc-noop><span class="lbl">${esc(rest.join('|') || '(未命名)')}<span class="sub">${esc(app)} · ${m.n} 条 · ${fmtSize(m.bytes || 0)}</span></span>${k === SC.key ? '<span class="tag">当前</span>' : ''}</button><button data-sc-del="${esc(k)}">清除</button></div>`;
+  }).join('');
+  openSheet('cache', `<h3>会话缓存</h3>`
+    + `<div class="hint">手机上保存了每个会话的完整对话，重启电脑端也不会丢；只有你清除时才会删除。</div>`
+    + (SC.key ? `<div class="pRow" style="margin:10px 0"><button data-sc="fold">折叠所有轮次</button><button data-sc="unfold">展开所有轮次</button></div>` : '')
+    + (list || '<div class="hint">还没有缓存的会话。</div>')
+    + (rows.length ? `<button class="opt" data-sc="clearAll"><span class="lbl">清除全部会话缓存</span></button>` : ''));
+}
 function renderChat(chat) {
   lastChat = chat;
   if (chat && 'context' in chat) renderContext(chat.context);
@@ -1836,6 +2016,10 @@ function renderChat(chat) {
   paintSurface();
   if (!chat) { itemsEl.replaceChildren(); renderQueue(false, []); renderQuestions(null); paintSessions(null); return; }
   const sessionChanged = paintSessions(chat);
+  const V = scMerge(chat);
+  if (SC.key && V.all.length) $('older').hidden = Math.min(...V.all.map(it => acpNum(it.i)).filter(n => n >= 0), Infinity) <= 0;
+  $('cachedMore').hidden = !V.older;
+  $('cachedMore').textContent = `↑ 显示更早的本地记录（${V.older} 条）`;
   const stick = nearBottom() || sessionChanged;
   // Anchor on the first visible item so loading older messages doesn't jump.
   let anchor = null, anchorTop = 0;
@@ -1844,7 +2028,7 @@ function renderChat(chat) {
       if (el.offsetTop + el.offsetHeight > list.scrollTop) { anchor = el.dataset.i; anchorTop = el.offsetTop - list.scrollTop; break; }
     }
   }
-  const els = chat.items.map(it => {
+  const els = V.items.map(it => {
     const key = JSON.stringify(it);
     const hit = cache.get(it.i);
     if (it.k === 'thinking' && hit?.el) {
@@ -1858,12 +2042,21 @@ function renderChat(chat) {
     cache.set(it.i, { key, el });
     return el;
   });
+  V.items.forEach((it, n) => {
+    const st = it.k === 'human' && V.stat?.get(it.i);
+    if (!st) return;
+    const el = els[n], folded = SC.collapsed.has(it.i);
+    const fb = el.querySelector('[data-fold]');
+    if (fb) fb.textContent = folded ? '▸' : '▾';
+    const sm = el.querySelector('.turnSum');
+    if (sm) sm.textContent = folded && st.n ? `${st.n} 条回复${st.tools ? ` · ${st.tools} 个工具` : ''}` : '';
+  });
   itemsEl.replaceChildren(...els);
-  latestTasks = chat.items.filter(it => it.k === 'tasks').pop() || null;
+  latestTasks = V.all.filter(it => it.k === 'tasks').pop() || null;
   $('taskChip').hidden = !latestTasks;
   if (latestTasks) $('taskChip').innerHTML = `<span>${I18N.tr('任务')}</span> ${latestTasks.done}/${latestTasks.total}`;
   if (sheetKind === 'tasks') showTasks();
-  const live = new Set(chat.items.map(it => it.i));
+  const live = new Set(V.items.map(it => it.i));
   for (const k of cache.keys()) if (!live.has(k)) cache.delete(k);
 
   $('actionBar').innerHTML = buttonsHtml(chat.global, 'g');
@@ -1939,24 +2132,35 @@ $('qnBar').addEventListener('keydown', e => {
   e.target.nextElementSibling.click();
 });
 
+// Small stroke icons for the queue / stop controls (the text is in title and aria-label).
+const ICONS = {
+  edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
+  enter: '<polyline points="9 10 4 15 9 20"/><path d="M20 4v7a4 4 0 0 1-4 4H4"/>',
+  x: '<path d="M18 6 6 18M6 6l12 12"/>',
+  trash: '<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M6 6l1 14h10l1-14"/>',
+  stop: '<rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/>',
+  eye: '<path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>',
+  back: '<path d="M19 12H5"/><path d="m12 19-7-7 7-7"/>',
+};
+const ibtn = (icon, label, attrs = '', cls = '') => `<button class="ib ${cls}" ${attrs} title="${label}" aria-label="${label}"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS[icon]}</svg></button>`;
 function renderQueue(busy, queued, subs = [], readonly = false, changed = 0, qCount = 0) {
   const bar = $('queueBar');
   const devin = currentApp === 'devin';
   let html = '';
-  if (readonly) html += `<div class="run sub"><span>正在查看子 Agent 的对话（只读）</span><button data-main>返回主对话</button></div>`;
+  if (readonly) html += `<div class="run sub"><span>正在查看子 Agent 的对话（只读）</span>${ibtn('back', '返回主对话', 'data-main')}</div>`;
   if (subs.length && !readonly) {
     html += `<button class="qh fold" data-fold>${subsOpen ? '▾' : '▸'} <span>子 Agent 运行中 ${subs.length} 个</span></button>`;
     if (subsOpen) html += subs.map(n => `<div class="q"><span class="qt sa">${esc(n)}</span>`
-      + `<button data-sub="${esc(n)}" data-part="open">查看</button><button data-sub="${esc(n)}" data-part="stop">停止</button></div>`).join('');
+      + ibtn('eye', '查看', `data-sub="${esc(n)}" data-part="open"`) + ibtn('stop', '停止', `data-sub="${esc(n)}" data-part="stop"`, 'del') + '</div>').join('');
   }
-  if (busy && !readonly) html += `<div class="run"><i></i><span>Stop generation</span><button data-stop>停止</button></div>`;
+  if (busy && !readonly) html += `<div class="run"><i></i><span>Stop generation</span>${ibtn('stop', '停止', 'data-stop', 'del')}</div>`;
   const n = Math.max(queued.length, devin ? qCount || 0 : 0);
   if (n) {
-    html += `<div class="qh">排队中 ${n} 条${devin ? ` <button data-a="clear" data-q="">清空</button>` : ''}</div>`;
+    html += `<div class="qh">排队中 ${n} 条${devin ? ' ' + ibtn('trash', '清空', 'data-a="clear" data-q=""', 'del') : ''}</div>`;
     html += queued.map(q => `<div class="q"><span class="qt">${esc(q.t || '(空)')}</span>`
-      + (devin ? '' : `<button data-q="${esc(q.id)}" data-a="edit">修改</button>`)
-      + `<button data-q="${esc(q.id)}" data-a="send" title="打断当前这一轮，立刻发送">立即发送</button>`
-      + `<button data-q="${esc(q.id)}" data-a="remove">删除</button></div>`).join('');
+      + ibtn('edit', devin ? '从队列取出，放回输入框' : '修改', `data-q="${esc(q.id)}" data-a="edit"`)
+      + ibtn('enter', '打断当前这一轮，立刻发送', `data-q="${esc(q.id)}" data-a="send"`)
+      + ibtn('x', '删除', `data-q="${esc(q.id)}" data-a="remove"`, 'del') + '</div>').join('');
     if (devin && !queued.length) html += `<div class="q"><span class="qt">内容读不到，只显示数量</span></div>`;
   }
   if (changed && !readonly) html += `<button class="qh fold" data-changes>改动了 ${changed} 个文件 ›</button>`;
@@ -1967,6 +2171,7 @@ function renderQueue(busy, queued, subs = [], readonly = false, changed = 0, qCo
 function editQueued(id) {
   const q = (lastChat?.queued || []).find(x => x.id === id);
   if (!q) return status('这条排队消息已经不在了', false);
+  if (currentApp === 'devin') { status('正在取出…'); return send({ t: 'queue', id, action: 'edit' }); }
   openSheet('queueEdit', `<h3>修改排队消息</h3>
     <textarea id="qEdit" style="width:100%;box-sizing:border-box;min-height:120px;max-height:50dvh;margin-bottom:10px"></textarea>
     <button class="opt" id="qSave" style="justify-content:center;background:var(--accent);border-color:var(--accent-b);color:#fff;font-weight:600">保存（仍在排队）</button>`);
