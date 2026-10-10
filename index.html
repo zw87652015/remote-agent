@@ -388,6 +388,7 @@
   <div id="gateMsg"></div>
   <input id="gateInput" autocapitalize="off" autocorrect="off" spellcheck="false">
   <button id="gateBtn" class="primary"></button>
+  <button id="gateScan" hidden>扫码配对</button>
   <a id="gateApp" class="primary-link" hidden>在 App 中打开</a>
   <div id="gateActions">
     <button id="gateRetry">重试</button>
@@ -495,6 +496,7 @@ function gate({ msg = '', err = false, input = null, retry = false, repair = fal
     $('gateBtn').textContent = input.button;
     if (input.code) setTimeout(() => inp.focus(), 50);
   }
+  $('gateScan').hidden = !(input?.scan && window.AgentRemoteApp?.scan);
   $('gateApp').hidden = !appLink;
   if (appLink) $('gateApp').href = appLink;
   $('gateRetry').hidden = !retry;
@@ -506,6 +508,7 @@ function gate({ msg = '', err = false, input = null, retry = false, repair = fal
 }
 const ungate = () => $('gate').classList.remove('open');
 $('gateBtn').onclick = () => gateSubmit?.($('gateInput').value.trim());
+$('gateScan').onclick = () => window.AgentRemoteApp?.scan?.();
 $('gateInput').onkeydown = e => { if (e.key === 'Enter') $('gateBtn').click(); };
 $('gateRetry').onclick = () => { if (gateRetryFn) gateRetryFn(); else boot(); };
 $('gateComputers').onclick = () => showComputers();
@@ -645,7 +648,7 @@ function showUnpaired(msg = '') {
   gate({
     msg: (msg ? msg + '\n\n' : '') + '这台设备还没有配对。\n在电脑上运行 npm run pair，用手机扫码；或者把链接复制过来粘贴到下面。',
     err: !!msg,
-    input: { placeholder: '粘贴配对链接', button: '配对', submit: pastePair },
+    input: { placeholder: '粘贴配对链接', button: '配对', submit: pastePair, scan: true },
   });
 }
 
@@ -1352,8 +1355,8 @@ function showComputers(note = '') {
 function pairPublished(name) {
   closeSheet();
   gate({
-    msg: `「${name || '这台电脑'}」还没在这只手机上配对。\n在那台电脑上运行 npm run pair，把链接粘贴到下面。已配对的电脑会保留。`,
-    input: { placeholder: '粘贴配对链接', button: '配对', submit: pastePair },
+    msg: `「${name || '这台电脑'}」还没在这只手机上配对。\n在那台电脑上运行 npm run pair，扫码或把链接粘贴到下面。已配对的电脑会保留。`,
+    input: { placeholder: '粘贴配对链接', button: '配对', submit: pastePair, scan: true },
     retry: '返回',
     onRetry: () => showComputers(),
   });
@@ -1361,8 +1364,8 @@ function pairPublished(name) {
 function addComputer() {
   closeSheet();
   gate({
-    msg: '配对另一台电脑。\n在那台电脑上运行 npm run pair，把链接粘贴到下面。已有的电脑会保留。',
-    input: { placeholder: '粘贴配对链接', button: '配对', submit: pastePair },
+    msg: '配对另一台电脑。\n在那台电脑上运行 npm run pair，扫码或把链接粘贴到下面。已有的电脑会保留。',
+    input: { placeholder: '粘贴配对链接', button: '配对', submit: pastePair, scan: true },
     retry: '返回',
     onRetry: () => loadComputers().length ? showComputers() : showUnpaired(),
   });
