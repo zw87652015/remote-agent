@@ -176,6 +176,10 @@
   .tlist .in_progress { color: var(--hi); font-weight: 600; }
   .tlist .in_progress .ti { color: var(--warn); }
   #taskChip { margin: 6px 10px; font-size: 12px; }
+  #sessBar { flex: none; display: flex; gap: 6px; padding: 6px 10px; overflow-x: auto; background: var(--panel); border-bottom: 1px solid var(--line); -webkit-overflow-scrolling: touch; }
+  #sessBar[hidden] { display: none; }
+  #sessBar .sessChip { flex: none; max-width: 52vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; padding: 4px 10px; color: var(--muted); }
+  #sessBar .sessChip.on { color: var(--hi); border-color: var(--accent-b); background: var(--ctrl); }
   .surfSeg { display: inline-flex; border: 1px solid var(--line2); border-radius: 8px; overflow: hidden; flex: none; }
   .surfSeg[hidden] { display: none; }
   .surfSeg button { border: 0; border-radius: 0; background: none; color: var(--muted); padding: 4px 9px; font-size: 12px; }
@@ -212,6 +216,10 @@
   #qnBar .qnFree { display: flex; gap: 6px; }
   #qnBar .qnFree input { flex: 1; min-width: 0; font-size: 14px; }
   #qnBar .qnFree.on input { border-color: var(--warn); }
+  #qnBar .qnPg { float: right; display: inline-flex; gap: 6px; }
+  #qnBar .qnPg button { padding: 0 10px; line-height: 1.4; }
+  #qnBar .qnOpt span small { display: block; color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+  #qnBar .qnHint { font-size: 12px; color: var(--muted); }
   #qnBar .qnAct { display: flex; gap: 8px; justify-content: flex-end; }
   #qnBar .qnAct button { padding: 7px 16px; }
   #qnBar .qnAct .primary { background: var(--accent); border-color: var(--accent-b); color: #fff; font-weight: 600; }
@@ -374,6 +382,7 @@
       <div class="meter" id="meterCtx"><span>上下文</span><span class="track"><i id="meterCtxFill"></i></span><b id="meterCtxPct">–</b></div>
       <div id="quotaMeters"></div>
     </div>
+    <div id="sessBar" hidden></div>
     <div id="list">
       <button id="older">↑ 加载更早的消息</button>
       <button id="taskChip" hidden></button>
@@ -1777,6 +1786,34 @@ function noteSwitch(chat) {
 }
 
 let lastChat = null;
+// Devin sessions: each session has its own rows, thought bodies, tasks, questions and queue. When the desktop
+// shows another session, drop everything cached for the old one so the two never mix in one scroll.
+let curSessKey = null;
+function paintSessions(chat) {
+  const s = chat?.session || null, bar = $('sessBar');
+  const key = s ? s.key : null;
+  const changed = key !== curSessKey;
+  if (changed) {
+    curSessKey = key;
+    cache.clear();
+    thoughtFull.clear();
+    qnSig = '';
+    latestTasks = null;
+    itemsEl.replaceChildren();
+    list.scrollTop = list.scrollHeight;
+  }
+  const tabs = s?.tabs || [];
+  bar.hidden = !s || !tabs.length;
+  bar.innerHTML = tabs.map(t => `<button class="sessChip ${t.active ? 'on' : ''}" data-sess="${esc(t.title)}" title="${esc(t.title)}">${esc(t.title)}</button>`).join('');
+  bar.querySelector('.on')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  return changed;
+}
+$('sessBar').onclick = e => {
+  const b = e.target.closest('[data-sess]');
+  if (!b || b.classList.contains('on')) return;
+  status('正在切换会话…');
+  send({ t: 'openAgent', id: `tab:${b.dataset.sess}` });
+};
 function renderChat(chat) {
   lastChat = chat;
   if (chat && 'context' in chat) renderContext(chat.context);
@@ -1792,8 +1829,9 @@ function renderChat(chat) {
   updateSendMode();
   currentSurface = chat?.surface || null;
   paintSurface();
-  if (!chat) { itemsEl.replaceChildren(); renderQueue(false, []); renderQuestions(null); return; }
-  const stick = nearBottom();
+  if (!chat) { itemsEl.replaceChildren(); renderQueue(false, []); renderQuestions(null); paintSessions(null); return; }
+  const sessionChanged = paintSessions(chat);
+  const stick = nearBottom() || sessionChanged;
   // Anchor on the first visible item so loading older messages doesn't jump.
   let anchor = null, anchorTop = 0;
   if (!stick) {
@@ -1853,6 +1891,17 @@ function renderQuestions(qs) {
   if (sig === qnSig) return;
   qnSig = sig;
   if (!qs?.list?.length) { bar.innerHTML = ''; bar.classList.remove('show'); return; }
+  if (qs.devin) {
+    const q = qs.list[0], pg = qs.pager;
+    bar.innerHTML = `<div class="qnHead">❓ Devin 在问你${pg ? `（${pg.cur}/${pg.total}）` : ''}`
+      + (pg && pg.total > 1 ? `<span class="qnPg"><button data-qpart="prev" ${qs.canPrev ? '' : 'disabled'}>‹</button><button data-qpart="next" ${qs.canNext ? '' : 'disabled'}>›</button></span>` : '') + '</div>'
+      + `<div class="qnQ">${esc(q.text)}</div><div class="qnOpts">`
+      + q.options.map((o, oi) => `<button class="qnOpt ${o.sel ? 'on' : ''}" data-qi="0" data-oi="${oi}"><b>${q.multi ? (o.sel ? '☑' : '☐') : String.fromCharCode(65 + oi)}</b><span>${esc(o.label)}${o.desc ? `<small>${esc(o.desc)}</small>` : ''}</span></button>`).join('')
+      + `</div><div class="qnHint">想自己回答？直接在下方输入框写</div>`
+      + `<div class="qnAct"><button data-qpart="skip">跳过</button>${qs.hasSubmit ? `<button class="primary" data-qpart="submit" ${qs.canSubmit ? '' : 'disabled'}>提交</button>` : ''}</div>`;
+    bar.classList.add('show');
+    return;
+  }
   bar.innerHTML = `<div class="qnHead">❓ Agent 在问你${qs.list.length > 1 ? `（${qs.list.length} 个问题）` : ''}</div>`
     + qs.list.map((q, qi) => `<div class="qnQ">${qs.list.length > 1 ? `${qi + 1}. ` : ''}${esc(q.text)}</div><div class="qnOpts">`
       + q.options.map((o, oi) => {
@@ -1868,7 +1917,11 @@ function renderQuestions(qs) {
 $('qnBar').onclick = e => {
   const b = e.target.closest('button');
   if (!b) return;
-  if (b.dataset.qpart) { status(b.dataset.qpart === 'skip' ? '已跳过' : '已提交'); return send({ t: 'question', part: b.dataset.qpart }); }
+  if (b.dataset.qpart) {
+    const p = b.dataset.qpart;
+    if (p === 'skip' || p === 'submit') status(p === 'skip' ? '已跳过' : '已提交');
+    return send({ t: 'question', part: p });
+  }
   if (b.dataset.qfree) {
     const [qi, oi] = b.dataset.qfree.split(':').map(Number);
     return send({ t: 'question', qi, oi, part: 'option', text: b.previousElementSibling.value });
