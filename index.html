@@ -163,6 +163,32 @@
   .thinking .tha { flex: none; color: var(--blue); }
   .thinking .thb { white-space: pre-wrap; max-height: 42vh; overflow: auto; margin-top: 4px; }
   .thinking.live { border-left-color: var(--warn-d); }
+  .thinking .thb.loading { font-style: italic; color: var(--muted); }
+  .tcard { font-size: 13px; line-height: 1.45; color: var(--mid); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+  .tprog-head { font-weight: 600; color: var(--hi); margin-bottom: 4px; }
+  .tprog { height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; margin-bottom: 6px; }
+  .tprog i { display: block; height: 100%; background: var(--ok); }
+  .tlist { list-style: none; margin: 0; padding: 0; }
+  .tlist li { display: flex; gap: 8px; padding: 2px 0; }
+  .tlist .ti { flex: none; width: 1em; text-align: center; color: var(--muted); }
+  .tlist .done .ti { color: var(--ok); }
+  .tlist .done .tt { color: var(--muted); text-decoration: line-through; }
+  .tlist .in_progress { color: var(--hi); font-weight: 600; }
+  .tlist .in_progress .ti { color: var(--warn); }
+  #taskChip { margin: 6px 10px; font-size: 12px; }
+  .surfSeg { display: inline-flex; border: 1px solid var(--line2); border-radius: 8px; overflow: hidden; flex: none; }
+  .surfSeg[hidden] { display: none; }
+  .surfSeg button { border: 0; border-radius: 0; background: none; color: var(--muted); padding: 4px 9px; font-size: 12px; }
+  .surfSeg button.on { background: var(--ctrl); color: var(--hi); }
+  .msg.human .rv { display: flex; align-self: center; margin-left: 6px; }
+  .revertBtn { font-size: 11px; padding: 2px 8px; color: var(--muted); background: none; border: 1px solid var(--line); }
+  #taskChip span { color: var(--muted); }
+  .sheetTasks li { display: flex; gap: 8px; padding: 4px 2px; }
+  .sheetTasks .ti { flex: none; width: 1em; text-align: center; color: var(--muted); }
+  .sheetTasks .done .ti { color: var(--ok); }
+  .sheetTasks .done .tt { color: var(--muted); text-decoration: line-through; }
+  .sheetTasks .in_progress { font-weight: 600; color: var(--hi); }
+  .sheetTasks .in_progress .ti { color: var(--warn); }
   .thinking.live .thbtn { color: var(--warn-t); }
   .btns { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
   .btns button { font-size: 13px; padding: 5px 10px; }
@@ -288,11 +314,29 @@
   #vBody.wrap .code { min-width: 0; }
   #vBody .l { display: flex; white-space: pre; }
   #vBody.wrap .l { white-space: pre-wrap; overflow-wrap: anywhere; }
-  #vBody .l i { flex: none; width: 3.6em; padding-right: 10px; text-align: right; color: var(--lnno); font-style: normal; user-select: none; -webkit-user-select: none; }
+  #vBody .l i { flex: none; width: 3.6em; padding-right: 10px; text-align: right; color: var(--ln, var(--lnno)); font-style: normal; user-select: none; -webkit-user-select: none; }
   #vBody .l.hl { background: var(--hlbg); }
   #vBody img { display: block; max-width: 100%; margin: 12px auto; background: var(--imgbg); }
   #vBody .note { padding: 30px 20px; color: var(--muted); text-align: center; line-height: 1.7; }
   #vBody .note.err { color: var(--err); }
+  #vTools { flex: none; display: flex; align-items: center; gap: 6px; padding: 4px 10px; background: var(--panel); border-bottom: 1px solid var(--line); font-size: 12px; }
+  #vTools button { padding: 3px 9px; font-size: 12px; }
+  #vTools button.on { border-color: var(--accent-b); color: var(--hi); }
+  #vCount, #vSrc { color: var(--muted); white-space: nowrap; }
+  #vSrc { margin-left: auto; }
+  #vBody .l .lc { flex: 1; min-width: 0; }
+  #vBody .l .tok.b { font-weight: 600; }
+  #vBody .l .tok.i { font-style: italic; }
+  #vBody .l .tok.u { text-decoration: underline; }
+  #vBody .l.mk-add { background: var(--ab); }
+  #vBody .l.mk-mod { background: var(--mb); }
+  #vBody .l.mk-add i { box-shadow: inset 3px 0 0 var(--ga); }
+  #vBody .l.mk-mod i { box-shadow: inset 3px 0 0 var(--gm); }
+  #vBody .dm { height: 0; border-top: 2px solid var(--gd); margin-left: 3.6em; position: relative; }
+  #vBody .dm::before { content: '▲'; position: absolute; left: -12px; top: -8px; font-size: 8px; color: var(--gd); }
+  #vBody .gap { display: flex; padding: 3px 0 3px 3.6em; color: var(--muted); border-top: 1px dashed var(--line); border-bottom: 1px dashed var(--line); cursor: pointer; user-select: none; -webkit-user-select: none; }
+  #vBody .l.hl { background: var(--sel, var(--hlbg)); }
+  #vBody .l { content-visibility: auto; }
   #vBody.editing { display: flex; overflow: hidden; }
   #vEditBox { flex: 1; min-height: 0; width: 100%; box-sizing: border-box; margin: 0; border: 0; outline: none; resize: none;
               background: var(--bg); color: var(--hi); font: 13px/1.5 ui-monospace, Menlo, monospace; padding: 10px 12px 24px; }
@@ -332,6 +376,7 @@
     </div>
     <div id="list">
       <button id="older">↑ 加载更早的消息</button>
+      <button id="taskChip" hidden></button>
       <div id="items"></div>
       <div id="empty" hidden>没找到聊天面板。<br>请在 Cursor 里打开 Agent 对话，或切到「画面」查看。</div>
     </div>
@@ -380,6 +425,7 @@
   <div id="chatTools">
     <button id="pickMode" hidden></button>
     <button id="pickModel" title="更换模型">模型 ▾</button>
+    <span id="surfSeg" class="surfSeg" hidden><button data-surf="agent">Agent</button><button data-surf="editor">Editor</button></span>
     <button id="pickAgents" title="切换电脑上的 Agent">Agent</button>
     <!-- 旧版输入框旁的对话历史。Agents 和 Devin 改由左侧会话列表切换，见 README。 -->
     <button id="pickHistory" hidden>历史</button>
@@ -391,6 +437,7 @@
     <input id="imgFile" type="file" accept="image/*" hidden>
     <button id="mic" title="语音输入" aria-label="语音输入"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
     <button id="send">发送</button>
+    <button id="sendNow" hidden>立即发送</button>
   </div>
   <div id="msg"></div>
 </footer>
@@ -404,6 +451,10 @@
     <div class="names"><div id="vName"></div><div id="vPath"></div></div>
     <button id="vEdit" hidden>编辑</button>
     <button id="vWrap">换行</button>
+  </div>
+  <div id="vTools" hidden>
+    <button id="vPrev">▲</button><button id="vNext">▼</button><span id="vCount"></span>
+    <button id="vOnly">只看改动</button><span id="vSrc"></span>
   </div>
   <div id="vBody"></div>
 </div>
@@ -920,13 +971,14 @@ function connect() {
       $('titleText').textContent = currentApp === 'devin' ? 'Devin agent' : winLabel(m.title).name;
       $('text').placeholder = currentApp === 'devin' ? '发给 Devin…' : '发给 Cursor Agent…';
       renderChat(null);
+      send({ t: 'appTheme', dark: document.documentElement.dataset.theme !== 'light' });
       if (currentApp === 'devin') {
         renderQuota({ bars: [] });
         renderContext(null);
       } else send({ t: 'usage' });
       send({ t: 'windows' });
     }
-    else if (m.t === 'agents') { finishPending(['正在读取 Agent 列表…']); showAgents(m.list || []); }
+    else if (m.t === 'agents') { finishPending(['正在读取 Agent 列表…']); showAgents(m.list || [], m.surface); }
     else if (m.t === 'terminals') { finishPending(['正在读取终端列表…']); showTerminals(m.list || []); }
     else if (m.t === 'agentBusy') $('termBusy').hidden = !(mode === 'terminal' && m.busy);
     else if (m.t === 'termText') renderTerm(m);
@@ -947,6 +999,10 @@ function connect() {
     else if (m.t === 'params') showParams(m);
     else if (m.t === 'changes') showChanges(m);
     else if (m.t === 'file') showFile(m);
+    else if (m.t === 'thought') onThought(m);
+    else if (m.t === 'revertConfirm') {
+      ask(m.title ? `${m.title}${m.body ? '\n' + m.body : ''}` : '确认回退？', '确认回退').then(ok => send({ t: ok ? 'revertOk' : 'revertCancel' }));
+    }
     else if (m.t === 'saved') onSaved(m);
     else if (m.t === 'status') { clearSwitchWatch(); status(m.msg, m.ok); }
   };
@@ -1007,7 +1063,21 @@ function showTerminals(list) {
   const rows = list.map(t => `<div class="optRow"><button class="opt ${t.current ? 'cur' : ''}" data-term="${esc(t.id)}"><span class="lbl">${esc(t.title)}</span>${t.current ? '<span class="tag">当前</span>' : ''}</button><button data-term-del="${esc(t.id)}" data-term-name="${esc(t.title)}">删除</button></div>`).join('');
   openSheet('terminals', `<h3>终端</h3>${rows || '<div class="hint">还没有终端。</div>'}<button class="opt" data-act="newTerm"><span class="lbl">＋ 新建终端</span></button>`);
 }
-function showAgents(list) {
+// Devin: which of its two surfaces the desktop shows (chat.surface). Cursor never sets it.
+let currentSurface = null;
+function paintSurface() {
+  const devin = currentApp === 'devin';
+  $('surfSeg').hidden = !(devin && currentSurface);
+  for (const b of $('surfSeg').children) b.classList.toggle('on', b.dataset.surf === currentSurface);
+  $('pickAgents').textContent = devin ? '会话' : 'Agent';
+}
+$('surfSeg').onclick = e => {
+  const b = e.target.closest('[data-surf]');
+  if (!b || b.dataset.surf === currentSurface) return;
+  status('正在切换界面…');
+  send({ t: 'surface', to: b.dataset.surf });
+};
+function showAgents(list, surface) {
   const groups = [];
   for (const a of list) {
     let g = groups.find(x => x.name === (a.group || ''));
@@ -1016,7 +1086,8 @@ function showAgents(list) {
   }
   const rows = groups.map(g => (g.name ? `<div class="pSec">${esc(g.name)}</div>` : '') + g.items.map(a =>
     `<button class="opt ${a.current ? 'cur' : ''}" data-agent="${esc(a.id)}"><span class="lbl">${esc(a.title)}</span>${a.running && !a.current ? '<span class="tag">运行中</span>' : ''}${a.current ? '<span class="tag">当前</span>' : ''}</button>`).join('')).join('');
-  openSheet('agents', `<h3>切换 Agent</h3>${rows || '<div class="hint">没有找到 Agent。Cursor 要打开 Agents 窗口；Devin 的会话在侧边栏。</div>'}`);
+  const title = surface ? `切换会话 · ${surface === 'editor' ? 'Editor 界面' : 'Agent 界面'}` : '切换 Agent';
+  openSheet('agents', `<h3>${I18N.tr(title)}</h3>${rows || '<div class="hint">没有找到 Agent。Cursor 要打开 Agents 窗口；Devin 的会话在侧边栏。</div>'}`);
 }
 $('title').onclick = () => { send({ t: 'windows' }); showWindows(); };
 
@@ -1049,6 +1120,9 @@ function showMenu(kind, items, max, fusion) {
 
 function showChanges(m) {
   status('');
+  if (!m.files.length && m.devin && m.count) {
+    return openSheet('changes', `<h3>Agent 改动的文件（${m.count}）</h3><div class="hint">这个界面里读不到逐个文件的改动。切到 Agent 界面可以看到完整列表。</div>`);
+  }
   if (!m.files.length) { if (sheetKind === 'changes') closeSheet(); return status('没有待处理的改动'); }
   openSheet('changes', `<h3>Agent 改动的文件（${m.files.length}）</h3>`
     + (m.actions.length ? `<div class="pRow" style="margin-bottom:10px">${m.actions.map(a => `<button data-chbar="${esc(a)}">${esc(a)}</button>`).join('')}</div>` : '')
@@ -1349,6 +1423,7 @@ $('sheet').addEventListener('click', async e => {
   else if (act === 'theme') {
     const next = { dark: 'light', light: 'auto', auto: 'dark' }[store.get('theme') || 'dark'];
     setAppTheme(next);
+    send({ t: 'appTheme', dark: document.documentElement.dataset.theme !== 'light' });
     showMainMenu();
   }
   else if (act === 'computers') showComputers();
@@ -1461,6 +1536,7 @@ function setMode(m) {
   view.classList.toggle('gesture', m === 'screen' || m === 'terminal');
   document.body.classList.toggle('term', m === 'terminal');
   text.placeholder = m === 'terminal' ? '发给终端…' : currentApp === 'devin' ? '发给 Devin…' : '发给 Cursor Agent…';
+  updateSendMode();
   if (m !== 'terminal') $('termBusy').hidden = true;
   sentWidth = 0;
   if (authed) send({ t: 'mode', mode: m });
@@ -1509,7 +1585,13 @@ document.querySelector('main').addEventListener('touchcancel', () => { swipe = n
 /* ---------- chat view ---------- */
 const list = $('list'), itemsEl = $('items');
 const cache = new Map();
-itemsEl.addEventListener('click', e => {
+itemsEl.addEventListener('click', async e => {
+  const rv = e.target.closest('[data-revert]');
+  if (rv) {
+    if (!await ask('回退到这条消息？之后的对话和文件改动会被撤销。', '回退')) return;
+    send({ t: 'revert', i: rv.dataset.revert });
+    return;
+  }
   const tr = e.target.closest('[data-ttoggle]');
   if (tr && !e.target.closest('[data-file]')) {
     const box = tr.closest('.toolrow');
@@ -1527,7 +1609,21 @@ itemsEl.addEventListener('click', e => {
   box.classList.toggle('open', next);
   b.querySelector('.tha').textContent = next ? '收起' : '展开';
   if (body) body.hidden = !next;
+  // Devin thoughts beyond the payload budget arrive title-only; fetch the body on first open.
+  if (next && b.dataset.more && !thoughtFull.has(b.dataset.think)) {
+    thoughtFull.set(b.dataset.think, undefined);
+    if (body) { body.textContent = '加载中…'; body.classList.add('loading'); }
+    send({ t: 'thought', i: b.dataset.think });
+  }
 });
+const thoughtFull = new Map();
+function onThought(m) {
+  thoughtFull.set(m.i, m.text ?? null);
+  const box = document.querySelector(`[data-think="${CSS.escape(m.i)}"]`)?.closest('.thinking')?.querySelector('.thb');
+  if (!box) return;
+  box.classList.remove('loading');
+  box.textContent = m.text ?? '内容未保存';
+}
 
 function buttonsHtml(labels, item) {
   return labels.map((l, n) =>
@@ -1562,7 +1658,10 @@ function paintThinking(el, it) {
   const open = thinkingWantOpen(it);
   el.classList.toggle('live', !!it.live);
   el.classList.toggle('open', open);
-  const rest = (it.t || '').split('\n').slice(1).join('\n');
+  let rest = (it.t || '').split('\n').slice(1).join('\n');
+  const full = thoughtFull.get(it.i);
+  if (!rest && typeof full === 'string') rest = full;
+  const more = !!it.more && !rest;
   let btn = el.querySelector('.thbtn');
   let box = el.querySelector('.thb');
   if (!btn || !box) {
@@ -1570,9 +1669,10 @@ function paintThinking(el, it) {
     btn = el.querySelector('.thbtn');
     box = el.querySelector('.thb');
   }
-  btn.dataset.think = rest ? it.i : '';
+  btn.dataset.think = rest || more ? it.i : '';
+  btn.dataset.more = more ? '1' : '';
   btn.querySelector('.tht').textContent = thinkingTitle(it.t);
-  btn.querySelector('.tha').textContent = rest ? (open ? '收起' : '展开') : '';
+  btn.querySelector('.tha').textContent = rest || more ? (open ? '收起' : '展开') : '';
   const follow = box.scrollHeight - box.scrollTop - box.clientHeight < 48;
   if (box.textContent !== rest) box.textContent = rest;
   box.hidden = !open;
@@ -1607,10 +1707,21 @@ function renderTool(el, it) {
     + (chips ? `<div class="chips">${chips}</div>` : '');
 }
 
+// Devin's todo list ("N / M tasks done"): progress bar + checklist; the same markup feeds the Tasks sheet.
+const TASK_ICON = { done: '✓', in_progress: '◐', pending: '○' };
+function tasksHtml(it) {
+  const pct = it.total ? Math.round(it.done / it.total * 100) : 0;
+  const list = (it.items || []).map(x => `<li class="${esc(x.status)}"><span class="ti">${TASK_ICON[x.status] || '○'}</span><span class="tt">${esc(x.t)}</span></li>`).join('');
+  return `<div class="tprog"><i style="width:${pct}%"></i></div>` + (list ? `<ul class="tlist">${list}</ul>` : '');
+}
 function renderItem(it) {
   const el = document.createElement('div');
   el.className = 'msg ' + it.k;
-  if (it.k === 'human') el.innerHTML = `<div class="bubble">${esc(it.t || '')}</div>`;
+  if (it.k === 'tasks') { el.innerHTML = `<div class="tcard"><div class="tprog-head">${I18N.tr('任务')} ${it.done}/${it.total}</div>${tasksHtml(it)}</div>`; return el; }
+  if (it.k === 'human') {
+    el.innerHTML = `<div class="bubble">${esc(it.t || '')}</div>`;
+    if (it.src === 'devin') el.insertAdjacentHTML('beforeend', `<div class="rv"><button class="revertBtn" data-revert="${esc(it.i)}">回到这里</button></div>`);
+  }
   // it.h comes from the whitelist sanitizer in server.mjs (pageHelpers.clean): plain tags only, text escaped.
   else if (it.k === 'assistant') { el.innerHTML = it.h || ''; dressMessage(el); }
   else if (it.k === 'thinking') paintThinking(el, it);
@@ -1677,6 +1788,10 @@ function renderChat(chat) {
   const fusionLabel = chat?.model === 'Fusion' && chat.fusion ? `Fusion · ${fusionShort(chat.fusion.lead)} / ${fusionShort(chat.fusion.sidekick)}` : '';
   $('pickModel').textContent = (fusionLabel || chat?.model || '模型') + ' ▾';
   $('pickModel').title = chat?.fusion ? `${chat.fusion.lead} · ${chat.fusion.effort} · ${chat.fusion.sidekick}${chat.fusion.fast ? ' · Fast' : ''}` : (chat?.model || '更换模型');
+  chatBusy = !!chat?.busy;
+  updateSendMode();
+  currentSurface = chat?.surface || null;
+  paintSurface();
   if (!chat) { itemsEl.replaceChildren(); renderQueue(false, []); renderQuestions(null); return; }
   const stick = nearBottom();
   // Anchor on the first visible item so loading older messages doesn't jump.
@@ -1701,12 +1816,16 @@ function renderChat(chat) {
     return el;
   });
   itemsEl.replaceChildren(...els);
+  latestTasks = chat.items.filter(it => it.k === 'tasks').pop() || null;
+  $('taskChip').hidden = !latestTasks;
+  if (latestTasks) $('taskChip').innerHTML = `<span>${I18N.tr('任务')}</span> ${latestTasks.done}/${latestTasks.total}`;
+  if (sheetKind === 'tasks') showTasks();
   const live = new Set(chat.items.map(it => it.i));
   for (const k of cache.keys()) if (!live.has(k)) cache.delete(k);
 
   $('actionBar').innerHTML = buttonsHtml(chat.global, 'g');
   $('actionBar').classList.toggle('show', chat.global.length > 0);
-  renderQueue(chat.busy, chat.queued || [], chat.subagents || [], chat.readonly, chat.changed);
+  renderQueue(chat.busy, chat.queued || [], chat.subagents || [], chat.readonly, chat.changed, chat.queuedCount);
   renderQuestions(chat.readonly ? null : chat.questions);
 
   if (stick) list.scrollTop = list.scrollHeight;
@@ -1719,6 +1838,13 @@ function renderChat(chat) {
 }
 
 let subsOpen = false;
+// Newest Devin task list (highest acp index); the chip above the chat and its sheet show it.
+let latestTasks = null;
+function showTasks() {
+  if (!latestTasks) return closeSheet();
+  openSheet('tasks', `<h3>${I18N.tr('任务')} ${latestTasks.done}/${latestTasks.total}</h3><div class="sheetTasks">${tasksHtml(latestTasks)}</div>`);
+}
+$('taskChip').onclick = () => showTasks();
 // The Agent's ask-question tool: a card with the questions, options, a free-text answer and submit / skip.
 let qnSig = '';
 function renderQuestions(qs) {
@@ -1755,8 +1881,9 @@ $('qnBar').addEventListener('keydown', e => {
   e.target.nextElementSibling.click();
 });
 
-function renderQueue(busy, queued, subs = [], readonly = false, changed = 0) {
+function renderQueue(busy, queued, subs = [], readonly = false, changed = 0, qCount = 0) {
   const bar = $('queueBar');
+  const devin = currentApp === 'devin';
   let html = '';
   if (readonly) html += `<div class="run sub"><span>正在查看子 Agent 的对话（只读）</span><button data-main>返回主对话</button></div>`;
   if (subs.length && !readonly) {
@@ -1765,12 +1892,14 @@ function renderQueue(busy, queued, subs = [], readonly = false, changed = 0) {
       + `<button data-sub="${esc(n)}" data-part="open">查看</button><button data-sub="${esc(n)}" data-part="stop">停止</button></div>`).join('');
   }
   if (busy && !readonly) html += `<div class="run"><i></i><span>Stop generation</span><button data-stop>停止</button></div>`;
-  if (queued.length) {
-    html += `<div class="qh">排队中 ${queued.length} 条</div>`;
+  const n = Math.max(queued.length, devin ? qCount || 0 : 0);
+  if (n) {
+    html += `<div class="qh">排队中 ${n} 条${devin ? ` <button data-a="clear" data-q="">清空</button>` : ''}</div>`;
     html += queued.map(q => `<div class="q"><span class="qt">${esc(q.t || '(空)')}</span>`
-      + `<button data-q="${esc(q.id)}" data-a="edit">修改</button>`
+      + (devin ? '' : `<button data-q="${esc(q.id)}" data-a="edit">修改</button>`)
       + `<button data-q="${esc(q.id)}" data-a="send" title="打断当前这一轮，立刻发送">立即发送</button>`
       + `<button data-q="${esc(q.id)}" data-a="remove">删除</button></div>`).join('');
+    if (devin && !queued.length) html += `<div class="q"><span class="qt">内容读不到，只显示数量</span></div>`;
   }
   if (changed && !readonly) html += `<button class="qh fold" data-changes>改动了 ${changed} 个文件 ›</button>`;
   bar.innerHTML = html;
@@ -1797,7 +1926,7 @@ $('queueBar').onclick = async e => {
   const b = e.target.closest('button');
   if (!b) return;
   if ('changes' in b.dataset) { status('读取改动的文件…'); return send({ t: 'changes' }); }
-  if ('fold' in b.dataset) { subsOpen = !subsOpen; return renderQueue(lastChat?.busy, lastChat?.queued || [], lastChat?.subagents || [], lastChat?.readonly, lastChat?.changed); }
+  if ('fold' in b.dataset) { subsOpen = !subsOpen; return renderQueue(lastChat?.busy, lastChat?.queued || [], lastChat?.subagents || [], lastChat?.readonly, lastChat?.changed, lastChat?.queuedCount); }
   if ('stop' in b.dataset) {
     if (!await ask('停止 Agent？\n它这一轮正在做的事会中断。', '停止')) return;
     send({ t: 'stop' }); status('正在停止…'); return;
@@ -1811,6 +1940,12 @@ $('queueBar').onclick = async e => {
     return;
   }
   if (b.dataset.a === 'edit') return editQueued(b.dataset.q);
+  if (b.dataset.a === 'clear') {
+    if (!await ask('清空 Devin 的排队消息？', '清空')) return;
+    send({ t: 'queue', id: '', action: 'clear' });
+    status('正在清空排队消息…');
+    return;
+  }
   if (b.dataset.a === 'send' && !await ask('立即发送这条消息？\nAgent 当前这一轮会被打断。', '立即发送')) return;
   if (b.dataset.a === 'remove' && !await ask('删除这条排队消息？', '删除')) return;
   send({ t: 'queue', id: b.dataset.q, action: b.dataset.a });
@@ -1900,7 +2035,7 @@ $('pickMode').onclick = () => { status('读取模式列表…'); send({ t: 'open
 $('pickModel').onclick = () => { status('读取模型列表…'); send({ t: 'openMenu', kind: 'model' }); };
 $('pickAgents').onclick = () => { status('正在读取 Agent 列表…'); send({ t: 'agents' }); };
 $('pickHistory').onclick = () => { status('读取历史对话…'); send({ t: 'openMenu', kind: 'history' }); };
-$('newChat').onclick = () => { send({ t: 'newChat' }); status('已新建对话'); };
+$('newChat').onclick = () => { send({ t: 'newChat' }); status(currentApp === 'devin' ? '正在新建对话…' : '已新建对话'); };
 
 /* ---------- file viewer ---------- */
 $('vBody').classList.toggle('wrap', store.get('wrap') !== 'off');
@@ -1922,6 +2057,9 @@ function leaveEdit() {
 function openFile(ref) {
   leaveEdit();
   viewing = null;
+  vOnly = false;
+  vExpand.clear();
+  $('vTools').hidden = true;
   $('vEdit').hidden = true;
   $('vName').textContent = ref.split('/').pop();
   $('vPath').textContent = '';
@@ -1953,13 +2091,85 @@ function showFile(m) {
     body.append(img);
     return;
   }
-  const lines = m.text.replace(/\n$/, '').split('\n');
-  body.innerHTML = `<div class="code">${lines.map((l, n) =>
-    `<div class="l${n + 1 === m.line ? ' hl' : ''}"><i>${n + 1}</i>${esc(l) || ' '}</div>`).join('')}</div>`
-    + (m.truncated ? '<div class="note">文件太长，只显示了前 512 KB</div>' : '');
-  body.scrollTop = 0;
-  if (m.line) body.querySelector('.hl')?.scrollIntoView({ block: 'center' });
+  renderFileCode(m);
 }
+
+// ---- themed code view ----
+// Palette colours come from the relay; only strict hex is allowed into style.
+const HL_HEX = /^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
+const hcol = v => typeof v === 'string' && HL_HEX.test(v) ? v : null;
+let vMarks = null, vMarkLine = [], vOnly = false, vExpand = new Set(), vIdx = -1;
+function renderFileCode(m) {
+  const body = $('vBody');
+  const hl = m.hl?.theme ? m.hl : null;
+  const pal = (hl?.palette || []).map(hcol);
+  const col = k => hcol(hl?.theme?.[k]);
+  vMarks = m.marks || null;
+  const A = new Set(vMarks?.add || []), M = new Set(vMarks?.mod || []), D = new Set(vMarks?.del || []);
+  vMarkLine = [...new Set([...A, ...M, ...D])].sort((a, b) => a - b);
+  vIdx = -1;
+  $('vTools').hidden = !vMarks && !m.newFile;
+  $('vOnly').classList.toggle('on', vOnly);
+  $('vCount').textContent = vMarkLine.length ? `–/${vMarkLine.length}` : '';
+  $('vSrc').textContent = m.newFile ? '新文件' : vMarks ? (m.markSource === 'agent' ? 'Agent 的改动' : '对比 Git') : '';
+  const near = n => !vOnly || vMarkLine.some(k => Math.abs(k - n) <= 3);
+  const src = hl ? hl.lines : m.text.replace(/\n$/, '').split('\n').map(l => [[l, -1, 0]]);
+  const vars = [
+    hl ? `background:${col('bg') || 'var(--pre-bg)'};color:${col('fg') || 'inherit'}` : '',
+    `--ga:${col('gutterAdd') || '#2ea043'}`, `--gm:${col('gutterMod') || '#3b8eea'}`, `--gd:${col('gutterDel') || '#f14c4c'}`,
+    `--ab:${col('addBg') || 'transparent'}`, `--mb:${col('modBg') || 'transparent'}`,
+    `--ln:${col('lineNo') || ''}`, `--sel:${col('selection') || ''}`,
+  ].filter(Boolean).join(';');
+  const code = document.createElement('div');
+  code.className = 'code';
+  code.style.cssText = vars;
+  const toks = (t2) => t2.map(([t, pi, bits]) => {
+    const c = pi >= 0 ? pal[pi] : null;
+    const cls = 'tok' + (bits & 1 ? ' b' : '') + (bits & 2 ? ' i' : '') + (bits & 4 ? ' u' : '');
+    return `<span class="${cls}"${c ? ` style="color:${c}"` : ''}>${esc(t)}</span>`;
+  }).join('');
+  const lineHtml = n => `<div class="l${n === m.line ? ' hl' : ''}${A.has(n) ? ' mk-add' : M.has(n) ? ' mk-mod' : ''}" data-n="${n}"><i>${n}</i><span class="lc">${toks(src[n - 1] || [['', -1, 0]]) || ' '}</span></div>${D.has(n) ? '<div class="dm"></div>' : ''}`;
+  const total = src.length;
+  if (D.has(0)) code.insertAdjacentHTML('beforeend', '<div class="dm"></div>');
+  let n = 0;
+  const renderChunk = () => {
+    let html = '';
+    const end = Math.min(total, n + 300);
+    while (n < end) {
+      n++;
+      if (vOnly && !near(n)) {
+        let k = n;
+        while (k < total && !near(k + 1)) k++;
+        html += vExpand.has(n) ? rangeHtml(n, k) : `<div class="gap" data-gap="${n}">${I18N.tr(`⋯ ${k - n + 1} 行未改动`)}</div>`;
+        n = k;
+      } else html += lineHtml(n);
+    }
+    code.insertAdjacentHTML('beforeend', html);
+    if (n < total) setTimeout(renderChunk, 0);
+    else if (m.line) code.querySelector(`[data-n="${m.line}"]`)?.scrollIntoView({ block: 'center' });
+  };
+  const rangeHtml = (a, b) => { let s = ''; for (let k = a; k <= b; k++) s += lineHtml(k); return s; };
+  body.replaceChildren(code);
+  renderChunk();
+  if (m.truncated) code.insertAdjacentHTML('beforeend', '<div class="note">文件太长，只显示了前 512 KB</div>');
+}
+function jumpMark(dir) {
+  if (!vMarkLine.length) return;
+  vIdx = (vIdx + dir + vMarkLine.length) % vMarkLine.length;
+  $('vCount').textContent = `${vIdx + 1}/${vMarkLine.length}`;
+  const n = vMarkLine[vIdx];
+  if (vOnly && !$('vBody').querySelector(`[data-n="${n}"]`)) { vOnly = false; vExpand.clear(); renderFileCode(viewing); }
+  $('vBody').querySelector(`[data-n="${n}"]`)?.scrollIntoView({ block: 'center' });
+}
+$('vPrev').onclick = () => jumpMark(-1);
+$('vNext').onclick = () => jumpMark(1);
+$('vOnly').onclick = () => { vOnly = !vOnly; vExpand.clear(); if (viewing) renderFileCode(viewing); };
+$('vBody').addEventListener('click', e => {
+  const g = e.target.closest('.gap');
+  if (!g || !viewing) return;
+  vExpand.add(Number(g.dataset.gap));
+  renderFileCode(viewing);
+});
 
 const fmtSize = n => n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(1) + ' KB' : (n / 1048576).toFixed(1) + ' MB';
 
@@ -1976,8 +2186,10 @@ function onSaved(m) {
   if (!viewing || viewing.path !== m.path) return;
   viewing.text = editBase = $('vEditBox')?.value ?? viewing.text;
   viewing.size = m.size;
+  viewing.marks = null;
   leaveEdit();
   paintFile(viewing.text);
+  $('vTools').hidden = true;
   status('已保存');
 }
 function closeViewer() {
@@ -2004,6 +2216,7 @@ $('vEdit').onclick = () => {
     $('vEditBox').value = viewing.text;
     $('vEdit').textContent = '保存';
     $('vWrap').hidden = true;
+    $('vTools').hidden = true;
     $('vEditBox').focus();
     return;
   }
@@ -2266,13 +2479,30 @@ text.addEventListener('blur', () => {
   stickOnKeyboard = false;
   setTimeout(fitViewport, 60);
 });
+// Devin while its turn runs: Queue (default, Enter) or Send now (interrupts the turn, after confirmation).
+let chatBusy = false;
+function devinBusySplit() { return mode === 'chat' && currentApp === 'devin' && chatBusy; }
+function updateSendMode() {
+  const split = devinBusySplit();
+  const label = split ? '排队' : '发送';
+  if ($('send').textContent !== label) $('send').textContent = label;
+  $('sendNow').hidden = !split;
+}
 $('send').onclick = () => {
   const v = text.value;
   if (!v.trim()) return;
   if (mode === 'terminal') send({ t: 'termSend', text: v });
-  else send({ t: 'send', text: v, submit: true });
+  else send({ t: 'send', text: v, submit: true, ...(devinBusySplit() ? { when: 'queue' } : {}) });
   text.value = ''; autosize();
   if (mode === 'chat') list.scrollTop = list.scrollHeight;
+};
+$('sendNow').onclick = async () => {
+  const v = text.value;
+  if (!v.trim()) return;
+  if (!await ask('立即打断当前任务并发送？', '立即发送')) return;
+  send({ t: 'send', text: v, submit: true, when: 'now' });
+  text.value = ''; autosize();
+  list.scrollTop = list.scrollHeight;
 };
 // Enter sends. Shift+Enter keeps a newline. Ignore Enter that is confirming an IME candidate.
 // beforeinput's line-break event often has no shiftKey, so remember it from keydown.
