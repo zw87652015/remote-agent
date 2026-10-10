@@ -200,6 +200,8 @@ const I18N = (() => {
     [/^开启通知失败：(.*)$/, 'Could not turn on notifications: $1'],
     [/^已点击：(.*)$/, 'Tapped: $1'],
     [/^深色 \/ 浅色 \/ 跟随系统（当前：(.+)）$/, (m, a) => `Dark / Light / Follow system (now: ${{ '深色': 'Dark', '浅色': 'Light', '跟随系统': 'Follow system' }[a] || a})`],
+    [/^思考了 (.+)$/, 'Thought for $1'],
+    [/^… 省略 (\d+) 行$/, '… $1 more lines'],
     [/^(.+)：(开|关)$/, (m, a, b) => `${a}: ${b === '开' ? 'on' : 'off'}`],
     [/^已切换到 (.*)$/, 'Switched to $1'],
     [/^没找到选项：(.*)$/, 'Option not found: $1'],
