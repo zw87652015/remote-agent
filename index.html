@@ -591,11 +591,12 @@ window.visualViewport?.addEventListener('resize', fitViewport);
 window.visualViewport?.addEventListener('scroll', fitViewport);
 fitViewport();
 
+// window.screen explicitly: a top-level const named screen (the screen view) is declared further down.
 function fitOrientation() {
-  const t = screen.orientation?.type;
-  document.body.classList.toggle('land', t ? t.startsWith('landscape') : screen.width > screen.height);
+  const t = window.screen.orientation?.type;
+  document.body.classList.toggle('land', t ? t.startsWith('landscape') : window.screen.width > window.screen.height);
 }
-screen.orientation?.addEventListener('change', fitOrientation);
+window.screen.orientation?.addEventListener('change', fitOrientation);
 window.addEventListener('orientationchange', fitOrientation);
 fitOrientation();
 
@@ -3112,7 +3113,9 @@ $('mentionBox').addEventListener('click', e => {
   if (MN.root) return mentionAsk({ cat: r.label });
   const token = `@${r.label}`;
   text.setRangeText(token + ' ', t.start, t.caret, 'end');
-  MN.mentions.push({ token, q: MN.used, label: r.label, sub: r.sub || '' });
+  // From a category ("@file:") the relay must type the file's name too, or Devin only lists its default entries.
+  const q = MN.used.endsWith(':') && !r.label.startsWith(MN.used) ? MN.used + r.label : MN.used;
+  MN.mentions.push({ token, q, label: r.label, sub: r.sub || '' });
   autosize();
   mentionHide();
   text.focus();
