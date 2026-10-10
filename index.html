@@ -89,21 +89,22 @@
   main { flex: 1; min-height: 0; position: relative; }
   .view { position: absolute; inset: 0; display: none; flex-direction: column; min-width: 0; }
   .view.active { display: flex; }
-  /* Landscape chat: messages on the left, everything you control on the right (title, status, sessions, banners, input). */
-  @media (orientation: landscape) and (min-width: 560px) {
-    body.chatmode { display: grid; grid-template-columns: minmax(0, 1fr) clamp(300px, 40vw, 460px); grid-template-rows: auto auto auto minmax(0, 1fr) auto auto auto auto; }
-    body.chatmode main, body.chatmode #chatView { display: contents; }
-    body.chatmode #listWrap { grid-column: 1; grid-row: 1 / -1; border-right: 1px solid var(--line); min-width: 0; }
-    body.chatmode header, body.chatmode #meters, body.chatmode #sessBar, body.chatmode #qnBar, body.chatmode #queueBar, body.chatmode #actionBar, body.chatmode footer { grid-column: 2; min-width: 0; }
-    body.chatmode header { grid-row: 1; }
-    body.chatmode #meters { grid-row: 2; }
-    body.chatmode #sessBar { grid-row: 3; }
-    body.chatmode #qnBar { grid-row: 5; max-height: 30dvh; }
-    body.chatmode #queueBar { grid-row: 6; max-height: 22dvh; }
-    body.chatmode #actionBar { grid-row: 7; }
-    body.chatmode footer { grid-row: 8; }
-    body.chatmode textarea { max-height: 24dvh; }
-    body.chatmode #sessBar .sessChip { max-width: 34vw; }
+  /* Landscape chat: messages on the left, everything you control on the right (title, status, sessions, banners, input).
+     .land is the device orientation (set from screen.orientation); the viewport shape is not used because an open keyboard makes a portrait viewport wider than tall. */
+  @media (min-width: 560px) {
+    body.land.chatmode { display: grid; grid-template-columns: minmax(0, 1fr) clamp(300px, 40vw, 460px); grid-template-rows: auto auto auto minmax(0, 1fr) auto auto auto auto; }
+    body.land.chatmode main, body.land.chatmode #chatView { display: contents; }
+    body.land.chatmode #listWrap { grid-column: 1; grid-row: 1 / -1; border-right: 1px solid var(--line); min-width: 0; }
+    body.land.chatmode header, body.land.chatmode #meters, body.land.chatmode #sessBar, body.land.chatmode #qnBar, body.land.chatmode #queueBar, body.land.chatmode #actionBar, body.land.chatmode footer { grid-column: 2; min-width: 0; }
+    body.land.chatmode header { grid-row: 1; }
+    body.land.chatmode #meters { grid-row: 2; }
+    body.land.chatmode #sessBar { grid-row: 3; }
+    body.land.chatmode #qnBar { grid-row: 5; max-height: 30dvh; }
+    body.land.chatmode #queueBar { grid-row: 6; max-height: 22dvh; }
+    body.land.chatmode #actionBar { grid-row: 7; }
+    body.land.chatmode footer { grid-row: 8; }
+    body.land.chatmode textarea { max-height: 24dvh; }
+    body.land.chatmode #sessBar .sessChip { max-width: 34vw; }
   }
 
   /* chat view */
@@ -307,6 +308,7 @@
   #chatTools::-webkit-scrollbar, #termTools::-webkit-scrollbar { display: none; }
   #chatTools button, #termTools button { font-size: 12.5px; padding: 3px 10px; border-radius: 14px; flex: none; white-space: nowrap; }
   body.term #img, body.term #mic, body.term #attach { display: none !important; }
+  #chatTools #pickMode.bypass { color: var(--warn); border-color: var(--warn); }
   #chatTools #pickModel { flex: 0 0 auto; max-width: 46%; overflow: hidden; text-overflow: ellipsis; }
   .row { display: flex; gap: 8px; min-width: 0; align-items: flex-end; }
   textarea { flex: 1; min-width: 0; min-height: 40px; max-height: 32vh; padding: 9px 10px; resize: none; font-size: 16px; line-height: 1.35; }
@@ -588,6 +590,14 @@ function fitViewport() {
 window.visualViewport?.addEventListener('resize', fitViewport);
 window.visualViewport?.addEventListener('scroll', fitViewport);
 fitViewport();
+
+function fitOrientation() {
+  const t = screen.orientation?.type;
+  document.body.classList.toggle('land', t ? t.startsWith('landscape') : screen.width > screen.height);
+}
+screen.orientation?.addEventListener('change', fitOrientation);
+window.addEventListener('orientationchange', fitOrientation);
+fitOrientation();
 
 // In-progress lines end with … and are cleared when the result arrives, or after a few seconds
 // so a finished action cannot leave "正在…" on screen. A short result then fades on its own.
@@ -1198,6 +1208,9 @@ function fusionBlock(fusion) {
     + `<button class="opt" data-fusion="fast"><span class="lbl">Fast Mode</span><span class="switch ${fusion.fast ? 'on' : ''}"></span></button>`
     + '<div class="hint">Lead 负责规划和关键判断，Sidekick 负责具体执行。</div>';
 }
+// Devin's permission modes: the desktop's own description, plus a Chinese one when the app is in Chinese.
+const MODE_ZH = { Code: '写代码、改文件，正常提问', Smart: '模型判断安全的操作自动批准', Ask: '只回答问题，不改代码', Plan: '先做方案，再动手', 'Bypass Permissions': '自动批准所有工具调用（不再询问）' };
+const modeDesc = it => (I18N.lang === 'zh' && MODE_ZH[it.label]) || it.desc;
 function showMenu(kind, items, max, fusion) {
   const picking = String(kind || '').startsWith('fusion-');
   if (!items?.length && !fusion) return status('菜单是空的，可能 Cursor 版本不同', false);
@@ -1208,7 +1221,7 @@ function showMenu(kind, items, max, fusion) {
   const rows = (items || []).map(it => {
     const pick = picking
       ? `<button class="opt ${it.checked ? 'cur' : ''}" data-fusion-pick="${esc(part)}" data-label="${esc(it.label)}"><span class="lbl">${esc(it.label)}</span></button>`
-      : `<button class="opt ${it.checked ? 'cur' : ''}" data-kind="${kind}" data-label="${esc(it.label)}"><span class="lbl">${esc(it.label)}</span></button>`;
+      : `<button class="opt ${it.checked ? 'cur' : ''}" data-kind="${kind}" data-label="${esc(it.label)}"><span class="lbl">${esc(it.label)}${it.desc ? `<span class="sub">${esc(modeDesc(it))}</span>` : ''}</span>${it.label === 'Bypass Permissions' ? '<span class="tag" style="color:var(--warn)">⚠</span>' : ''}</button>`;
     return it.params ? `<div class="optRow">${pick}<button class="paramBtn" data-params="${esc(it.id)}" data-plabel="${esc(it.label)}">参数</button></div>` : pick;
   }).join('');
   openSheet('menu', `<h3>${MENU_TITLE[kind] || ''}</h3>` + (picking ? '' : fusionBlock(fusion)) + maxRow + rows);
@@ -1318,7 +1331,6 @@ function showMainMenu() {
   openSheet('main', `<h3>菜单</h3>
     ${appName ? `<div class="pSec">${appName}</div>` : ''}
     <button class="opt" data-act="model"><span class="lbl">更换模型<span class="sub" id="menuModel">${esc(lastChat?.model || '选择当前 Agent 的模型')}</span></span></button>
-    <button class="opt" data-act="projects"><span class="lbl">打开项目<span class="sub">最近用过的本地文件夹</span></span></button>
     <button class="opt" data-act="docs"><span class="lbl">查看文档<span class="sub">README 和代码</span></span></button>
     <button class="opt" data-act="settings"><span class="lbl">${appName ? appName + ' 设置' : '设置'}</span></button>
     <button class="opt" data-act="screen"><span class="lbl">画面<span class="sub">直接看电脑上的 ${appName || 'Cursor'}</span></span></button>
@@ -1514,7 +1526,12 @@ $('sheet').addEventListener('click', async e => {
     if (b.dataset.fusion === 'fast') return send({ t: 'fusionPick', part: 'fast' });
     return send({ t: 'fusionOptions', part: b.dataset.fusion });
   }
-  if (b.dataset.kind) { closeSheet(); beginSwitch(b.dataset.kind); return send({ t: 'pickMenu', kind: b.dataset.kind, label: b.dataset.label }); }
+  if (b.dataset.kind) {
+    // Bypass Permissions lets the Agent run every tool call (commands, edits, deletes) without asking.
+    if (b.dataset.kind === 'mode' && b.dataset.label === 'Bypass Permissions' && !b.classList.contains('cur')
+      && !await ask('切到「Bypass Permissions」？\nAgent 之后的所有操作（运行命令、改文件、删文件）都会自动批准，不再询问你。', '切换')) return;
+    closeSheet(); beginSwitch(b.dataset.kind); return send({ t: 'pickMenu', kind: b.dataset.kind, label: b.dataset.label });
+  }
   if (b.dataset.chopen) { closeSheet(); return openFile(b.dataset.chopen); }
   if (b.dataset.ch) {
     const undo = b.dataset.act2 === 'undo';
@@ -2253,7 +2270,8 @@ function renderChat(chat) {
   $('older').hidden = !chat || chat.earlier === false;
   $('pickMode').hidden = !chat?.mode;
   $('pickModel').hidden = false;
-  if (chat?.mode) $('pickMode').textContent = chat.mode + ' ▾';
+  if (chat?.mode) $('pickMode').textContent = (chat.mode === 'Bypass Permissions' ? '⚠ ' : '') + chat.mode + ' ▾';
+  $('pickMode').classList.toggle('bypass', chat?.mode === 'Bypass Permissions');
   const fusionLabel = chat?.model === 'Fusion' && chat.fusion ? `Fusion · ${fusionShort(chat.fusion.lead)} / ${fusionShort(chat.fusion.sidekick)}` : '';
   $('pickModel').textContent = (fusionLabel || chat?.model || '模型') + ' ▾';
   $('pickModel').title = chat?.fusion ? `${chat.fusion.lead} · ${chat.fusion.effort} · ${chat.fusion.sidekick}${chat.fusion.fast ? ' · Fast' : ''}` : (chat?.model || '更换模型');
