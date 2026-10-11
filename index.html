@@ -2549,7 +2549,7 @@ function scSwitch(sess) {
   const k = SC.key;
   if (!k) return;
   scGet('h:' + k).then(v => {
-    if (SC.key !== k || !v) return;
+    if (SC.key !== k || !v || lastChat?.empty) return;
     for (const it of v.items || []) {
       const cur = SC.items.get(it.i);
       SC.items.set(it.i, cur ? scKeep(it, cur) : it);
@@ -2562,6 +2562,9 @@ function scSwitch(sess) {
 // to SC.show), minus the replies of folded turns. A turn is a user message plus everything up to the next one.
 function scMerge(chat) {
   if (!SC.key) return { items: chat.items, all: chat.items, older: 0, stat: null };
+  if (chat.empty && SC.items.size) {
+    SC.items.clear(); SC.sig.clear(); SC.collapsed.clear(); scDirty();
+  }
   let changed = false;
   for (const it of chat.items) {
     const sig = JSON.stringify(it);
