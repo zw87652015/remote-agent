@@ -134,7 +134,7 @@
   .attachment img { width: 56px; height: 42px; object-fit: cover; border-radius: 7px; }
   .attachment span { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
   .attachment button { padding: 3px 6px; border: none; background: transparent; color: var(--muted2); }
-  #list { flex: 1; display: flex; flex-direction: column; overflow-y: auto; overflow-x: hidden; padding: 10px 12px 16px; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
+  #list { flex: 1; display: flex; flex-direction: column; overflow-y: auto; overflow-x: hidden; padding: 10px 12px 16px; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; overflow-anchor: none; }
   /* Short threads sit on the composer. The spacer shrinks away once the thread scrolls. */
   #list::before { content: ""; flex: 1 1 auto; min-height: 0; }
   #older { display: block; margin: 0 auto 10px; font-size: 13px; color: var(--muted2); background: transparent; }
@@ -869,8 +869,19 @@ async function decryptEntry(keyText, entry) {
 }
 
 const offline = msg => Object.assign(new Error(msg), { offline: true });
+function discoveryUrl() {
+  return pending?.discovery || currentComputer()?.discovery || new URL('url.json', location.href).href;
+}
+function computerLink(url, current = '') {
+  const target = new URL(url);
+  const params = new URLSearchParams(target.hash.slice(1));
+  params.set('computers', JSON.stringify(loadComputers().map(c => ({ ...c, discovery: c.discovery || new URL('url.json', location.href).href }))));
+  if (current) params.set('computer', current);
+  target.hash = params.toString();
+  return target.href;
+}
 async function resolveBase() {
-  if (info.self) return location.origin;
+  if (info.self) return new URL(discoveryUrl()).origin;
   const comp = currentComputer();
   if (!comp?.key) throw Object.assign(new Error(''), { unpaired: true });
   if (info.v === 2 && info.data) {
@@ -913,6 +924,23 @@ function parsePair(text) {
   const m = /[#&]pair=([\w-]{43})\.([\w-]{16,})/.exec(text || '');
   return m ? { key: m[1], code: m[2] } : null;
 }
+{
+  const params = new URLSearchParams(location.hash.slice(1));
+  if (params.has('computers')) {
+    const list = loadComputers();
+    try {
+      for (const c of JSON.parse(params.get('computers'))) {
+        if (!c?.key || !c?.token) continue;
+        const i = list.findIndex(old => old.key === c.key);
+        if (i < 0) list.push(c); else list[i] = c;
+      }
+      saveComputers(list, params.get('computer') || currentComputer()?.key || '');
+    } catch {}
+    params.delete('computers');
+    params.delete('computer');
+    history.replaceState(null, '', location.pathname + location.search + (params.size ? '#' + params.toString() : ''));
+  }
+}
 let pending = parsePair(location.hash);
 if (pending) history.replaceState(null, '', location.pathname + location.search);
 // Opened from a notification: <app>#win=<window id or JSON with windowId and threadId>.
@@ -953,14 +981,19 @@ function pastePair(text) {
   if (!p) return showUnpaired('这不是配对链接（应包含 #pair=…）');
   let target;
   try { target = new URL(text.trim()); } catch {}
-  const here = location.origin + location.pathname;
-  // A link for another app address: switch to it (the Android app remembers the new address).
-  if (target && /^https?:$/.test(target.protocol) && target.origin + target.pathname !== here) {
-    if (inApp) return window.AgentRemoteApp.setUrl(target.href);
-    location.href = target.href;
+  if (target && /^https?:$/.test(target.protocol) && target.origin !== location.origin) {
+    const link = computerLink(target.href);
+    if (inApp) return window.AgentRemoteApp.setUrl(link);
+    location.href = link;
     return;
   }
+  if (target && /^https?:$/.test(target.protocol)) p.discovery = new URL('url.json', target).href;
   pending = p;
+  connGen++;
+  authed = false;
+  const old = ws;
+  ws = null;
+  try { old?.close(); } catch {}
   boot();
 }
 
@@ -989,7 +1022,7 @@ async function testEndpoint(url, relay = false, timeout = 8000) {
 let offlineGen = 0;
 let lastFailure = { stage: '应用连接', error: '' };
 async function diagnoseConnection(failure, gen) {
-  const page = new URL('url.json', location.href).href;
+  const page = discoveryUrl();
   const relay = base ? base.replace(/\/$/, '') + '/url.json' : '';
   const endpoints = [{ label: '页面地址发布', url: page }, { label: '隧道和电脑服务', url: relay }];
   const box = $('gateTests');
@@ -1070,7 +1103,7 @@ async function pair(totp) {
     const id = body.id || await computerIdFromKey(pending.key);
     const prev = loadComputers().find(c => c.key === pending.key);
     const list = loadComputers().filter(c => c.key !== pending.key);
-    list.push({ id, name: body.name || prev?.name || '电脑', key: pending.key, token: body.token, win: prev?.win || '' });
+    list.push({ id, name: body.name || prev?.name || '电脑', key: pending.key, token: body.token, win: prev?.win || '', discovery: discoveryUrl(), relay: base });
     saveComputers(list, pending.key);
     store.set('window', null);
     pending = null;
@@ -1107,7 +1140,7 @@ async function boot() {
   }
   gate({ msg: '正在查找电脑…' });
   try {
-    info = await fetch('url.json?t=' + Date.now(), { cache: 'no-store', signal: AbortSignal.timeout(10000) }).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
+    info = await fetch(discoveryUrl() + '?t=' + Date.now(), { cache: 'no-store', signal: AbortSignal.timeout(10000) }).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
   } catch (error) {
     base = currentComputer()?.relay || '';
     return showOffline({ stage: '页面地址读取', error: error.message });
@@ -1146,7 +1179,7 @@ async function boot() {
 }
 
 async function resolvePending() {
-  if (info.self) return location.origin;
+  if (info.self) return new URL(discoveryUrl()).origin;
   if (info.v === 2 && info.data) return decryptEntry(pending.key, info);
   if (info.v !== 3 || !Array.isArray(info.computers)) throw new Error('电脑端还没有发布地址，请在那台电脑上重启服务');
   const id = await computerIdFromKey(pending.key);
@@ -1432,7 +1465,7 @@ function showFusionSides(m) {
     if (!wins.has(s.windowId)) wins.set(s.windowId, { title: s.windowTitle, rows: [] });
     wins.get(s.windowId).rows.push(s);
   }
-  const rows = [...apps].map(([app, wins]) => `<details ${[...wins.values()].some(w => w.rows.some(s => s.id === selected)) ? 'open' : ''}><summary>${esc(({ codex: 'Codex', cursor: 'Cursor', devin: 'Devin' })[app] || app)}</summary>${wins.size ? [...wins.values()].map(w => `<details ${w.rows.some(s => s.id === selected) ? 'open' : ''}><summary>${esc(w.title)}</summary>${w.rows.map(s => `<button class="opt ${s.id === selected ? 'cur' : ''}" data-fusion-pick="${esc(m.side)}" data-fusion-id="${esc(s.id)}"><span class="lbl">${esc(s.conversationTitle)}</span></button>`).join('')}</details>`).join('') : '<div class="hint">当前项目没有已打开的会话</div>'}</details>`).join('');
+  const rows = [...apps].map(([app, wins]) => `<details ${[...wins.values()].some(w => w.rows.some(s => s.id === selected)) ? 'open' : ''}><summary>${esc(({ codex: 'Codex', cursor: 'Cursor', devin: 'Devin' })[app] || app)}</summary>${wins.size ? [...wins.values()].map(w => `<details ${w.rows.some(s => s.id === selected) ? 'open' : ''}><summary>${esc(w.title)}</summary>${w.rows.map(s => `<button class="opt ${s.id === selected ? 'cur' : ''}" data-fusion-pick="${esc(m.side)}" data-fusion-id="${esc(s.id)}"><span class="lbl">${esc(s.conversationTitle)}</span></button>`).join('')}</details>`).join('') : `<div class="hint">${esc(m.apps?.find(a => a.app === app)?.unavailable || '当前项目没有已打开的会话')}</div>`}${['cursor', 'devin'].includes(app) ? `<button class="opt" data-fusion-new="${esc(app)}" data-fusion-side="${esc(m.side)}"><span class="lbl">＋ 新增会话</span></button>` : ''}</details>`).join('');
   openSheet('fusion-side', `<h3>选择 ${m.side === 'b' ? 'B 执行' : 'A 方案'}</h3><div class="hint">仅显示所选项目。按软件、窗口、对话依次展开，再选择模型。A/B 可以使用同一软件或同一会话。</div><div class="fusionTree">${rows || '<div class="hint">没有可选的对话</div>'}</div>`);
 }
 function showFusionHistory(m) {
@@ -1935,6 +1968,7 @@ $('sheet').addEventListener('click', async e => {
   if (b.dataset.fusionHistory) { closeSheet(); return send({ t: 'fusionOpen', id: b.dataset.fusionHistory }); }
   if (b.dataset.fusionRefresh) { closeSheet(); status('正在读取额度…'); return send({ t: 'fusionUsage', side: b.dataset.fusionRefresh }); }
   if (b.dataset.fusionSelect) { closeSheet(); return send({ t: 'fusionSides', side: b.dataset.fusionSelect }); }
+  if (b.dataset.fusionNew) { closeSheet(); status('正在创建会话…'); return send({ t: 'fusionNewSide', side: b.dataset.fusionSide, app: b.dataset.fusionNew }); }
   if (b.dataset.fusionId) { closeSheet(); return send({ t: 'fusionSide', side: b.dataset.fusionPick, id: b.dataset.fusionId }); }
   if (b.dataset.codexArchive) {
     const id = b.dataset.codexArchive, name = b.dataset.codexName || '';
@@ -2089,6 +2123,12 @@ function useComputer(i) {
   const c = list[Number(i)];
   if (!c) return showComputers();
   saveDraft();
+  if (c.discovery && new URL(c.discovery).origin !== location.origin) {
+    const link = computerLink(new URL('./', c.discovery).href, c.key);
+    if (inApp) return window.AgentRemoteApp.setUrl(link);
+    location.href = link;
+    return;
+  }
   saveComputers(list, c.key);
   restoreDraft();
   store.set('window', c.win || null);
@@ -2272,7 +2312,7 @@ const TOOL_LABEL = { search: 'Searched', explore: 'Explored', read: 'Read', comm
 const thinkingPref = new Map();
 function thinkingWantOpen(it) {
   if (thinkingPref.has(it.i)) return thinkingPref.get(it.i);
-  return !!it.live || (it.t || '').startsWith('工作过程\n');
+  return !!it.live || (it.t || '').replace(/^[AB] · /, '').startsWith('工作过程\n');
 }
 function paintThinking(el, it) {
   const open = thinkingWantOpen(it);
@@ -2684,7 +2724,7 @@ function userSelecting() {
   return !!sel && !sel.isCollapsed && sel.rangeCount > 0 && itemsEl.contains(sel.getRangeAt(0).commonAncestorContainer);
 }
 let deferredRender = false;
-let chatScrolling = false, scrollIdle = 0, deferredScrollRender = false;
+let chatScrolling = false, chatTouching = false, scrollIdle = 0, deferredScrollRender = false;
 document.addEventListener('selectionchange', () => {
   if (deferredRender && !userSelecting()) { deferredRender = false; if (lastChat) renderChat(lastChat); }
 });
@@ -2724,7 +2764,7 @@ function showWorkdirs(m) {
 }
 function renderChat(chat) {
   const previous = lastChat;
-  if (currentApp === 'codex' && chatScrolling && chat && previous?.thread === chat.thread && !nearBottom()) {
+  if (chatScrolling && chat && previous?.thread === chat.thread) {
     lastChat = chat;
     deferredScrollRender = true;
     chatBusy = !!chat.busy;
@@ -2782,7 +2822,7 @@ function renderChat(chat) {
   $('cachedMore').textContent = `↑ 显示更早的本地记录（${V.older} 条）`;
   const stick = nearBottom() || sessionChanged;
   // Anchor on the first visible item so loading older messages doesn't jump.
-  let anchor = null, anchorTop = 0;
+  let anchor = null;
   if (!stick) {
     const top = list.getBoundingClientRect().top;
     let lo = 0, hi = itemsEl.children.length;
@@ -2791,8 +2831,15 @@ function renderChat(chat) {
       if (itemsEl.children[mid].getBoundingClientRect().bottom > top) hi = mid;
       else lo = mid + 1;
     }
-    const el = itemsEl.children[lo];
-    if (el) { anchor = el.dataset.i; anchorTop = el.getBoundingClientRect().top - top; }
+    const retained = new Set(V.items.filter(it => !(it.k === 'tool' && it.done)).map(it => String(it.i)));
+    for (let n = lo; n < itemsEl.children.length; n++) {
+      const el = itemsEl.children[n];
+      if (retained.has(el.dataset.i)) { anchor = { id: el.dataset.i, top: el.getBoundingClientRect().top - top }; break; }
+    }
+    if (!anchor) for (let n = lo - 1; n >= 0; n--) {
+      const el = itemsEl.children[n];
+      if (retained.has(el.dataset.i)) { anchor = { id: el.dataset.i, top: el.getBoundingClientRect().top - top }; break; }
+    }
   }
   const visibleItems = V.items.filter(it => !(it.k === 'tool' && it.done));
   const els = visibleItems.map(it => {
@@ -2851,8 +2898,8 @@ function renderChat(chat) {
 
   if (stick) list.scrollTop = list.scrollHeight;
   else if (anchor) {
-    const el = [...itemsEl.children].find(e => e.dataset.i === anchor);
-    if (el) list.scrollTop += el.getBoundingClientRect().top - list.getBoundingClientRect().top - anchorTop;
+    const el = [...itemsEl.children].find(e => e.dataset.i === anchor.id);
+    if (el) list.scrollTop += el.getBoundingClientRect().top - list.getBoundingClientRect().top - anchor.top;
   }
   if (!stick && previous && JSON.stringify(previous.items) !== JSON.stringify(chat.items)) $('toBottom').textContent = '↓ 有新消息';
   updateToBottom();
@@ -3025,21 +3072,27 @@ function preloadCodexHistory() {
   historyTimer = setTimeout(() => {
     historyTimer = 0;
     if (currentApp !== 'codex' || key !== viewSel + ':' + itemsEl.firstElementChild?.dataset.i) return;
+    if (chatScrolling && !$('cachedMore').hidden) return;
     historyPrefetch = key;
     if (!$('cachedMore').hidden) { SC.show += 100; renderChat(lastChat); }
     else send({ t: 'scrollChat', dy: -3200 });
   }, 150);
 }
-list.addEventListener('scroll', () => {
+function settleChatScroll() {
   chatScrolling = true;
   clearTimeout(scrollIdle);
   scrollIdle = setTimeout(() => {
+    if (chatTouching) return;
     chatScrolling = false;
     if (deferredScrollRender && lastChat) { deferredScrollRender = false; renderChat(lastChat); }
+    preloadCodexHistory();
   }, 220);
   updateToBottom();
   preloadCodexHistory();
-}, { passive: true });
+}
+list.addEventListener('scroll', settleChatScroll, { passive: true });
+list.addEventListener('touchstart', () => { chatTouching = true; chatScrolling = true; clearTimeout(scrollIdle); }, { passive: true });
+for (const event of ['touchend', 'touchcancel']) list.addEventListener(event, () => { chatTouching = false; settleChatScroll(); }, { passive: true });
 $('toBottom').onclick = () => { list.scrollTop = list.scrollHeight; };
 $('older').onclick = () => send({ t: 'scrollChat', dy: -900 });
 
