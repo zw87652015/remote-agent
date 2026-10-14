@@ -14,12 +14,15 @@ function rememberAgentOpen(m) {
 }
 function openSheet(kind, html) {
   sheetKind = kind;
+  $('sheet').dataset.kind = kind;
   $('sheet').innerHTML = html;
   $('shade').classList.add('open');
   $('sheet').classList.add('open');
   if (kind === 'agents') $('sheet').scrollTop = 0;
 }
 function closeSheet() {
+  if (sheetKind === 'devices') deviceRemoval = [];
+  fusionModelSide = null;
   menuRequest++;
   if (sheetKind === 'codex-settings') { codexSettingsRequest++; send({ t: 'closeCodexSettings' }); status(''); }
   sheetKind = null; menuSheetKind = '';
@@ -69,6 +72,54 @@ function showWindows() {
 }
 
 const FUSION_PHASE = { idle: '待开始', planning: '正在生成方案', plan: '方案待确认', execute: '正在执行方案', review: '正在检查结果', fix: '正在小修', disagree: '方案待确认', check: '请选择下一步', stopped: '未完成，已停止', done: '完成' };
+let fusionSetupKey = '', fusionSetupStep = 0, fusionModelSide = null;
+function requestFusionModel(side) {
+  closeSheet();
+  fusionModelSide = side;
+  menuSheetKind = `fusion-model-${side}`;
+  openSheet('menu', `<h3>${side.toUpperCase()} 模型</h3><p class="hint">正在读取模型…</p>`);
+  send({ t: 'fusionModel', side });
+}
+function paintFusionSetup(fx) {
+  const key = `${currentComputer()?.id || ''}|${lastChat.thread}|${fx.project?.id || ''}`;
+  if (key !== fusionSetupKey) {
+    fusionSetupKey = key;
+    fusionSetupStep = !fx.project ? 0 : !fx.a ? 1 : !fx.b ? 2 : 3;
+  }
+  const ready = !!(fx.project && fx.a?.model && fx.b?.model);
+  const confirmed = ready && store.get('fusion-setup-done') === key;
+  $('fusionSetup').hidden = confirmed;
+  $('fusionSetupReady').hidden = !confirmed;
+  if (confirmed) return;
+  const name = spec => spec ? `${({codex: 'Codex', cursor: 'Cursor', devin: 'Devin'})[spec.app] || spec.app} · ${cleanWindowTitle(spec.conversationTitle || spec.title)}` : I18N.tr('未选择');
+  const row = (step, title, summary, body, enabled) => `<section class="fusionStep ${fusionSetupStep === step ? 'active' : ''}"><button class="fusionStepHead" data-fusion-step="${step}" ${!enabled || fx.busy ? 'disabled' : ''}><span class="fusionStepNumber">${step + 1}</span><span class="lbl"><strong>${title}</strong><span class="sub">${esc(summary)}</span></span><span aria-hidden="true">${fusionSetupStep === step ? '▾' : '›'}</span></button>${fusionSetupStep === step ? `<div class="fusionStepBody">${body}</div>` : ''}</section>`;
+  const role = side => {
+    const spec = fx[side], label = side.toUpperCase();
+    return `<button class="opt" data-fusion-select="${side}" ${fx.busy ? 'disabled' : ''}><span class="lbl">选择 Agent / 会话<span class="sub">${esc(name(spec))}</span></span><span>›</span></button><button class="opt" data-fusion-setup-model="${side}" ${!spec || fx.busy ? 'disabled' : ''}><span class="lbl">模型与推理强度<span class="sub">${esc(spec?.model || I18N.tr('选择会话后沿用当前模型'))}</span></span><span>›</span></button><button class="primary fusionNext" data-fusion-step="${side === 'a' ? 2 : 3}" ${!spec?.model || fx.busy ? 'disabled' : ''}>${label === 'A' ? '下一步：配置 B' : '下一步：确认配置'}</button>`;
+  };
+  const summary = `<dl class="fusionSetupSummary"><dt>项目</dt><dd>${esc(fx.project?.name || '')}</dd><dt>A · 方案与检查</dt><dd>${esc(name(fx.a))}<small>${esc(fx.a?.model || '')}</small></dd><dt>B · 执行</dt><dd>${esc(name(fx.b))}<small>${esc(fx.b?.model || '')}</small></dd></dl><button class="primary fusionNext" data-fusion-setup-done ${!ready || fx.busy ? 'disabled' : ''}>开始对话</button><p class="hint">确认配置后输入任务，不会自动发送消息。</p>`;
+  $('fusionSetup').innerHTML = row(0, '选择项目', fx.project?.name || I18N.tr('未选择'), '<button class="opt" data-fusion-setup-project>选择项目</button>' + (fx.project ? '<button class="primary fusionNext" data-fusion-step="1">下一步：配置 A</button>' : ''), true)
+    + row(1, 'A · 方案与检查', fx.a ? name(fx.a) + ' · ' + fx.a.model : I18N.tr('未选择'), role('a'), !!fx.project)
+    + row(2, 'B · 执行', fx.b ? name(fx.b) + ' · ' + fx.b.model : I18N.tr('未选择'), role('b'), !!fx.a?.model)
+    + row(3, '确认配置', ready ? I18N.tr('检查项目与 A/B 配置') : I18N.tr('完成前面的配置后确认'), summary, ready);
+}
+$('fusionSetup').onclick = e => {
+  const b = e.target.closest('button');
+  if (!b || b.disabled) return;
+  if ('fusionStep' in b.dataset) {
+    fusionSetupStep = Number(b.dataset.fusionStep);
+    paintFusionSetup(lastChat.fusion);
+    $('fusionSetup').querySelector('.active').scrollIntoView({ block: 'nearest' });
+  }
+  else if ('fusionSetupProject' in b.dataset) $('fusionProject').click();
+  else if (b.dataset.fusionSelect) send({ t: 'fusionSides', side: b.dataset.fusionSelect });
+  else if (b.dataset.fusionSetupModel) requestFusionModel(b.dataset.fusionSetupModel);
+  else if ('fusionSetupDone' in b.dataset) {
+    store.set('fusion-setup-done', fusionSetupKey);
+    paintFusionSetup(lastChat.fusion);
+    text.focus();
+  }
+};
 function paintFusion(fx) {
   const on = !!fx;
   $('fusionConfig').hidden = !on;
@@ -81,6 +132,7 @@ function paintFusion(fx) {
   if (on) { $('pickModel').hidden = true; $('pickAgents').hidden = true; $('pickMode').hidden = true; }
   else $('pickAgents').hidden = false;
   if (!on) return;
+  paintFusionSetup(fx);
   renderFusionMeters(fx);
   $('fusionProject').textContent = '项目 ▾';
   $('fusionProject').title = fx.project?.root || '';
@@ -222,7 +274,13 @@ function showAgents(list) {
     const open = opened ? opened.has(win) : items.some(a => a.current) || (!anyCurrent && index === 0);
     return foldSection(win, body, open, items.length);
   }).join('');
-  openSheet('agents', `<h3>项目与会话</h3><button class="opt" data-act="agentsRefresh">刷新项目与会话</button><button class="opt" data-act="projects"><span class="lbl">选择文件夹／新建项目</span></button><button class="opt" data-act="projectNewChat"><span class="lbl">在当前项目新建会话</span></button>${rows || `<div class="hint">${esc(appMessage('没有找到 {app} 的 Agent。请在电脑上打开对应的会话窗口。'))}</div>`}`);
+  const html = `<h3>项目与会话</h3><button class="opt" data-act="agentsRefresh">刷新项目与会话</button><button class="opt" data-act="projects"><span class="lbl">选择文件夹／新建项目</span></button><button class="opt" data-act="projectNewChat"><span class="lbl">在当前项目新建会话</span></button>${rows || `<div class="hint">${esc(appMessage('没有找到 {app} 的 Agent。请在电脑上打开对应的会话窗口。'))}</div>`}`;
+  if (keep) {
+    const template = document.createElement('template');
+    template.innerHTML = html;
+    const old = [...$('sheet').children];
+    syncChildren($('sheet'), [...template.content.children].map(node => old.find(el => el.outerHTML === node.outerHTML) || node));
+  } else openSheet('agents', html);
   if (keep) requestAnimationFrame(() => { $('sheet').scrollTop = scroll; });
 }
 $('title').onclick = () => { send({ t: 'windows' }); showWindows(); };
@@ -276,7 +334,7 @@ function showMenu(kind, items, max, fusion, fast, model, refreshing) {
   const fastRow = fast && !fusion ? `<button class="opt" data-fast="${fast.on ? 'off' : 'on'}" data-fast-menu="${kind}"><span class="lbl">Fast 模式${fast.description ? `<span class="sub">${esc(fast.description)}</span>` : ''}</span><span class="switch ${fast.on ? 'on' : ''}"></span></button>` : '';
   const effortEntry = kind === 'model' ? `<button class="opt" data-effort-open><span class="lbl">思考强度<span class="sub">${esc(lastChat?.effort || '')}</span></span></button>` : '';
   const navigation = kind === 'effort' ? `<button class="opt" data-model-back>← 返回模型列表</button><p>${esc(model || lastChat?.model || '')}</p>${!items?.length ? '<p class="hint">这个模型没有可选的思考强度。</p>' : ''}` : '';
-  const done = kind === 'effort' ? '<button class="opt" data-model-done>完成</button>' : '';
+  const done = /^fusion-(model|effort)-[ab]$/.test(kind) ? '<button class="opt" data-model-done>返回配置</button>' : kind === 'effort' ? '<button class="opt" data-model-done>完成</button>' : '';
   openSheet('menu', `<h3>${MENU_TITLE[kind] || ''}${refreshing ? ' <span class="hint">更新中…</span>' : ''}</h3>` + navigation + agentRow + (picking ? '' : fusionBlock(fusion)) + effortEntry + fastRow + maxRow + rows + done);
 }
 
@@ -308,6 +366,7 @@ function showParams(m) {
 
 const listManagement = { kind: '', owner: '', editing: false, selected: new Set() };
 let pairedDevices = [];
+let deviceRemoval = [], removingDevices = false;
 function prepareListManagement(kind) {
   const owner = kind === 'devices' ? currentComputer()?.key || '' : '';
   if (listManagement.kind !== kind || listManagement.owner !== owner) {
@@ -355,24 +414,29 @@ async function showDevices() {
 }
 function renderDevices() {
   const when = t => new Date(t).toLocaleDateString();
-  openSheet('devices', `<h3>已配对设备</h3><div class="listTools">${listTools()}</div>` + pairedDevices.map(d => `
+  const scroll = $('sheet').querySelector('.deviceRows')?.scrollTop || 0;
+  const confirmation = deviceRemoval.length ? `<div class="hint">${esc(`移除「${pairedDevices.filter(d => deviceRemoval.includes(d.id)).map(d => d.name).join('、')}」？它们会立即断开，要重新配对才能再用。`)}</div><div class="askBtns"><button data-device-remove-cancel>取消</button><button class="danger" data-device-remove-confirm>移除</button></div>` : '';
+  openSheet('devices', `<div class="deviceHead"><h3>已配对设备</h3><div class="listTools" ${removingDevices ? 'inert' : ''}>${listTools()}</div>${removingDevices ? '<div class="hint">正在移除设备…</div>' : confirmation}</div><div class="deviceRows" ${removingDevices ? 'inert' : ''}>` + pairedDevices.map(d => `
     <${listManagement.editing && !d.current ? 'label' : 'div'} class="opt static ${d.current ? 'cur' : ''}">${listManagement.editing && !d.current ? listCheckbox(d.id) : ''}<span class="lbl">${esc(d.name)}<span class="sub">${d.current ? '当前设备 · ' : ''}设备码 ${esc(d.id)} · 配对于 ${when(d.created)} · 最近使用 ${when(d.lastSeen)}</span></span>
     ${d.current || listManagement.editing ? '' : `<button data-remove="${esc(d.id)}" data-name="${esc(d.name)}">移除</button>`}</${listManagement.editing && !d.current ? 'label' : 'div'}>`).join('')
-    + '<div class="hint">添加新设备：在电脑上运行 npm run pair。<br>开启 Authenticator 二次验证：npm run 2fa。</div>');
+    + '<div class="hint">添加新设备：在电脑上运行 npm run pair。<br>开启 Authenticator 二次验证：npm run 2fa。</div></div>');
+  $('sheet').querySelector('.deviceRows').scrollTop = scroll;
 }
-async function removePairedDevices(ids) {
+async function removePairedDevices(ids, confirmed = false) {
   const selected = pairedDevices.filter(d => !d.current && ids.includes(d.id));
   if (!selected.length) return;
-  const names = selected.map(d => d.name).join('、');
-  if (!await ask(`移除「${names}」？它们会立即断开，要重新配对才能再用。`, '移除')) return renderDevices();
-  try {
-    for (const d of selected) {
-      const r = await post('/api/devices/remove', { id: d.id });
-      if (!r.ok) throw new Error('移除设备失败');
-      listManagement.selected.delete(d.id);
-    }
-  } catch (e) { status(e.message, false); }
-  await showDevices();
+  if (!confirmed) { deviceRemoval = selected.map(d => d.id); return renderDevices(); }
+  deviceRemoval = []; removingDevices = true; renderDevices();
+  const results = await Promise.allSettled(selected.map(async d => {
+    const r = await post('/api/devices/remove', { id: d.id });
+    if (!r.ok) throw new Error('移除设备失败');
+    pairedDevices = pairedDevices.filter(item => item.id !== d.id);
+    listManagement.selected.delete(d.id);
+  }));
+  removingDevices = false;
+  const failed = results.find(r => r.status === 'rejected');
+  if (failed) status(failed.reason.message, false);
+  if (sheetKind === 'devices') renderDevices();
 }
 
 function showDocs(m) {
@@ -505,8 +569,8 @@ function showUsageDetails(kind) {
 }
 let usageTimer = null;
 function showMainMenu() {
-  const notifyItem = `<button class="opt" data-act="${notifyOn ? 'notifyOff' : 'notifyOn'}" role="switch" aria-checked="${notifyOn}"><span class="lbl">开启通知<span class="sub">Agent 完成或等你确认时提醒</span></span><span class="switch${notifyOn ? ' on' : ''}" aria-hidden="true"></span></button>`
-    + (notifyOn ? '<button class="opt" data-act="notifyTest"><span class="lbl">发一条测试通知</span></button>' : '');
+  const notifyItem = `<button class="opt" id="notifySwitchRow" data-act="notifyToggle" role="switch" aria-checked="${notifyOn}"><span class="lbl">开启通知<span class="sub">Agent 完成或等你确认时提醒</span></span><span class="switch${notifyOn ? ' on' : ''}" aria-hidden="true"></span></button>`
+    + (notifyOn ? '<button class="opt" id="notifyTestRow" data-act="notifyTest"><span class="lbl">发一条测试通知</span></button>' : '');
   const update = apkUpdate()
     ? `<button class="opt" data-act="appUpdate"><span class="lbl">更新安卓 App（v${esc(appVersion)} → v${esc(apkUpdate())}）</span><span class="tag">新</span></button>`
     : `<button class="opt" data-act="appUpdate"><span class="lbl">检查 App 更新（当前 v${esc(appVersion)}）</span></button>`;
