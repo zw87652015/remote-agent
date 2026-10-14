@@ -56,10 +56,10 @@ function applySelection(m, clearChat = true) {
   });
   if (changed) { mirroredDraft = ''; restoreDraft(); $('attachments').innerHTML = ''; send({ t: 'attachments' }); }
   const cachedAgents = agentLists.get(agentListKey());
-  if (cachedAgents && m.threadId) agentLists.set(agentListKey(), cachedAgents.map(a => ({ ...a, current: a.id === m.threadId || a.id === 'tab:' + m.threadId || a.id === 'thread:' + m.windowId + ':' + m.threadId })));
+  if (cachedAgents && m.threadId) setAgentList(agentListKey(), cachedAgents.map(a => ({ ...a, current: a.id === m.threadId || a.id === 'tab:' + m.threadId || a.id === 'thread:' + m.windowId + ':' + m.threadId })));
   if (m.project) currentProject = m.project;
   updateTitle();
-  if (clearChat && changed) { const cc = chatBySel.get(m.sel || viewSel); renderChat(cc || null, !!cc); }
+  if (clearChat && changed) { const cc = chatBySel.get(chatCacheKey(m.sel || viewSel)); renderChat(cc || null, !!cc); }
 }
 async function decryptEntry(keyText, entry) {
   const key = await crypto.subtle.importKey('raw', b64u(keyText), 'AES-GCM', false, ['decrypt']);
@@ -394,23 +394,18 @@ async function boot() {
   const chosen = currentComputer();
   rememberComputer({ ...chosen, relay: base });
   if (chosen?.win) store.set('window', chosen.win);
-  let meRes, me;
-  try {
-    meRes = await api('/api/me');
-    me = await meRes.json();
-  } catch (error) {
-    return showOffline({ stage: '电脑身份接口 /api/me', error: error.message });
+  await chatPreviewReady;
+  const app = String(chosen.win || '').split(':')[0];
+  const sel = [app, chosen.windowId || '', chosen.threadId || ''].join('|');
+  const preview = chatBySel.get(chatCacheKey(sel));
+  if (mode === 'chat' && preview) {
+    currentApp = app; currentWindow = chosen.win; viewSel = sel;
+    currentAppName = {cursor: 'Cursor', devin: 'Devin', codex: 'Codex', fusion: 'Fusion'}[app];
+    restoreDraft(); updateAppText();
+    renderChat(preview, true);
+    setWindowReady(false);
+    ungate(); connHide(); status('正在连接电脑…');
   }
-  if (!meRes.ok || !me || typeof me.paired !== 'boolean') return showOffline({ stage: '电脑身份接口 /api/me', error: 'HTTP ' + meRes.status });
-  const expectedId = chosen.id || await computerIdFromKey(chosen.key);
-  if (me.id && me.id !== expectedId) return showOffline({ stage: '电脑身份验证', error: '地址对应的电脑身份不一致，正在等待最新地址' });
-  if (!me.paired) return gate({ msg: '设备授权已失效或被移除，请重新授权这台设备。', err: true, repair: true, computers: loadComputers().length > 1 });
-  if (me.id || me.name) {
-    const cur = currentComputer();
-    const same = cur && (!me.id || me.id === cur.id || me.id === await computerIdFromKey(cur.key));
-    if (cur && same) rememberComputer({ ...cur, id: me.id || cur.id, name: me.name || cur.name || '电脑', device: me.device || cur.device || '' });
-  }
-  if (me.needTotp) return showTotp(verifyTotp);
   connect();
 }
 
@@ -435,7 +430,9 @@ function autoRetry() {
   retryTimer = setTimeout(() => { if (!authed) boot(); }, 15000);
 }
 
-function connect() {
+async function connect() {
+  const computer = currentComputer();
+  const expectedId = computer.id || await computerIdFromKey(computer.key);
   draftEpoch = '';
   setWindowReady(false);
   clearTimeout(retryTimer);
@@ -456,8 +453,7 @@ function connect() {
     renderQuestions(null);
     $('dot').className = '';
     if (!authed) {
-      // boot() asks /api/me whether the device was removed or needs 2FA again.
-      if (rejected) return boot();
+      if (rejected) return;
       return showOffline({ stage: opened ? '实时连接认证' : '实时连接建立', error: 'WebSocket 关闭码 ' + event.code });
     }
     authed = false;
@@ -470,20 +466,26 @@ function connect() {
   ws.onmessage = ev => {
     const m = JSON.parse(ev.data);
     if (m.t === 'auth') {
-      if (!m.ok) { rejected = true; return; }
       clearTimeout(connectTimer);
+      if (m.id !== expectedId || !m.ok) {
+        rejected = true;
+        socket.close();
+        if (m.id !== expectedId) return showOffline({stage: '电脑身份验证', error: '地址对应的电脑身份不一致，正在等待最新地址'});
+        if (m.needTotp) return showTotp(verifyTotp);
+        return gate({msg: '设备授权已失效或被移除，请重新授权这台设备。', err: true, repair: true, computers: loadComputers().length > 1});
+      }
+      rememberComputer({...currentComputer(), id: m.id, name: m.name, device: m.device});
       authed = true; failures = 0;
       ungate();
       connHostOk();
       if (sheetKind === 'computers') closeSheet();
       status('正在切换窗口…');
       send({ t: 'mode', mode });
-      send({ t: 'windows' });
       const fromNotice = window.AgentRemoteApp?.takeOpenWin?.() || pendingNotice;
       pendingNotice = '';
       if (fromNotice) rememberNotice(fromNotice);
       const chosen = currentComputer();
-      send({ t: 'attach', id: chosen?.win || store.get('window') || '', windowId: chosen?.windowId || '', threadId: chosen?.threadId || '' });
+      send({ t: 'attach', id: chosen?.win || store.get('window') || '', windowId: chosen?.windowId || '', threadId: chosen?.threadId || '', initial: true });
       sentWidth = 0;
       applyQuality();
       send({ t: 'visible', v: document.visibilityState === 'visible' });
@@ -506,7 +508,7 @@ function connect() {
     else if (m.t === 'visual') renderVisualState(m);
     else if (m.t === 'visualWindows') receiveVisualWindows(m);
     else if (m.t === 'attachments') { if (m.sel === viewSel) renderAttachments(m.list); }
-    else if (m.t === 'chat') { if (!m.sel || !viewSel || m.sel === viewSel) { if (m.chat) lruPut(chatBySel, m.sel || viewSel, m.chat, 12); renderChat(m.chat, !!m.cached); } }
+    else if (m.t === 'chat') { if (!m.sel || !viewSel || m.sel === viewSel) { if (m.chat) cacheChat(m.sel || viewSel, m.chat); queueChatRender(m.chat, !!m.cached, m.sel); } }
     else if (m.t === 'draft') { if ((m.draftEpoch || '') === draftEpoch && (!m.sel || m.sel === viewSel)) { if ((text.value === '' || text.value === mirroredDraft) && m.text !== text.value) { text.value = m.text; autosize(); } mirroredDraft = m.text; } }
     else if (m.t === 'draftAck') { if ((m.draftEpoch || '') === draftEpoch && m.ok && (!m.sel || m.sel === viewSel) && text.value === m.text) mirroredDraft = m.text; }
     else if (m.t === 'historyDone') finishHistory(m);
@@ -537,13 +539,14 @@ function connect() {
       currentWindow = m.id;
       currentApp = m.app || null;
       setWindowReady(true);
+      connHide();
       $('dot').className = 'ok';
       status('已连接');
       $('titleText').textContent = m.app === 'fusion' ? 'Fusion' : m.app === 'devin' ? 'Devin agent' : m.app === 'codex' ? 'Codex' : winLabel(m.title).name;
       currentAppName = m.appName;
       currentProject = m.app === 'fusion' ? '' : (m.project || winLabel(m.title).name);
       updateAppText(); updateTitle();
-      const cachedChat = m.sel ? chatBySel.get(m.sel) : null;
+      const cachedChat = m.sel ? chatBySel.get(chatCacheKey(m.sel)) : null;
       renderChat(cachedChat || null, !!cachedChat, !cachedChat);
       renderContext(null);
       $('quotaMeters').innerHTML = '';
@@ -551,7 +554,7 @@ function connect() {
       renderQuota(quotaCache.get(quotaKey()) || { missing: true, quota: [], limits: [] });
       send({ t: 'usage', automatic: true });
       send({ t: 'appTheme', dark: document.documentElement.dataset.theme !== 'light' });
-      send({ t: 'windows' });
+      if (!m.initial) send({ t: 'windows' });
     }
     else if (m.t === 'attachFailed') setWindowReady(m.ready);
     else if (m.t === 'agents') receiveAgents(m);
@@ -600,6 +603,10 @@ function connect() {
     else if (m.t === 'menu') {
       if (m.sel && viewSel && m.sel !== viewSel) return;
       lruPut(menuCache, menuCacheKey(m.kind), m, 24);
+      if (currentApp === 'fusion' && /^fusion-(model|effort)-[ab]$/.test(m.kind) && fusionModelSide === m.kind.slice(-1)) {
+        showMenu(m.kind, m.items, m.max, m.fusion, m.fast, m.model);
+        return;
+      }
       if (m.requestId != null && m.requestId !== menuRequest) return;
       if (m.requestId == null && !(sheetKind === 'menu' && menuSheetKind === m.kind)) return;
       showMenu(m.kind, m.items, m.max, m.fusion, m.fast, m.model);
