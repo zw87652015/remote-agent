@@ -3,35 +3,35 @@
 const nativeNotify = () => Boolean(window.AgentRemoteApp?.setNotify);
 const webPush = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
 let notifyOn = false;
+let notifySubscribed = false;
 
 const swReady = () => Promise.race([navigator.serviceWorker.ready, sleep(5000).then(() => { throw new Error('通知组件没有加载，请刷新后再试'); })]);
 const pushSub = async () => webPush() ? (await swReady()).pushManager.getSubscription() : null;
 const nativeConfig = () => JSON.stringify({ app: appAddress(), key: store.get('key') || '', token: store.get('token') || '' });
 
-// After every connect: refresh the menu state and re-register, since re-pairing gives the device a new id.
+// After every connect, read this device's saved setting without enabling a retained subscription.
 async function syncNotify() {
   try {
     if (nativeNotify()) {
       notifyOn = window.AgentRemoteApp.notifyEnabled();
       if (notifyOn) window.AgentRemoteApp.setNotify(nativeConfig());
     } else {
-      const sub = await pushSub();
-      notifyOn = Boolean(sub);
-      if (sub) await post('/api/push/subscribe', { sub: sub.toJSON() });
+      const [response, sub] = await Promise.all([api('/api/push/state'), pushSub()]);
+      if (!response.ok) throw new Error('读取通知状态失败');
+      const state = await response.json();
+      notifySubscribed = state.subscribed && Boolean(sub);
+      notifyOn = state.enabled && Boolean(sub);
     }
   } catch {}
   paintNotifySwitch();
 }
 
-// Reflect notifyOn into an open main-menu sheet: flip the switch and show/hide the test row.
+// Reflect the confirmed notification state into an open main-menu sheet.
 function paintNotifySwitch() {
   const row = $('notifySwitchRow');
   if (!row) return;
   row.setAttribute('aria-checked', String(notifyOn));
   row.querySelector('.switch')?.classList.toggle('on', notifyOn);
-  const test = $('notifyTestRow');
-  if (notifyOn && !test) row.insertAdjacentHTML('afterend', '<button class="opt" id="notifyTestRow" data-act="notifyTest"><span class="lbl">发一条测试通知</span></button>');
-  else if (!notifyOn && test) test.remove();
 }
 
 async function enableNotify() {
@@ -47,14 +47,22 @@ async function enableNotify() {
     return status(ios && !standalone() ? 'iPhone 要先「分享 → 添加到主屏幕」，从桌面图标打开后才能开启通知' : '这个浏览器不支持通知', false);
   }
   // Must be the first await: iOS only shows the permission prompt directly inside a tap.
-  const permission = await Notification.requestPermission();
+  const permission = Notification.permission === 'granted' ? 'granted' : await Notification.requestPermission();
   if (permission !== 'granted') return status('没有通知权限，请在系统设置里允许本 App 发通知', false);
   try {
-    const { key } = await api('/api/push/key').then(r => r.json());
-    const reg = await swReady();
-    const sub = await reg.pushManager.getSubscription() || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64u(key) });
-    const r = await post('/api/push/subscribe', { sub: sub.toJSON() });
+    let r;
+    if (notifySubscribed) r = await post('/api/push/state', { enabled: true });
+    else {
+      const reg = await swReady();
+      let sub = await reg.pushManager.getSubscription();
+      if (!sub) {
+        const { key } = await api('/api/push/key').then(r => r.json());
+        sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64u(key) });
+      }
+      r = await post('/api/push/subscribe', { sub: sub.toJSON() });
+    }
     if (!r.ok) throw new Error((await r.json()).error || '注册失败');
+    notifySubscribed = true;
     notifyOn = true;
     status('通知已开启');
   } catch (e) {
@@ -65,8 +73,8 @@ async function enableNotify() {
 async function disableNotify() {
   if (nativeNotify()) window.AgentRemoteApp.setNotify('');
   else {
-    await (await pushSub().catch(() => null))?.unsubscribe().catch(() => {});
-    await post('/api/push/unsubscribe').catch(() => {});
+    const response = await post('/api/push/state', { enabled: false });
+    if (!response.ok) throw new Error('关闭通知失败，请重试');
   }
   notifyOn = false;
   status('通知已关闭');
@@ -291,16 +299,10 @@ $('sheet').addEventListener('click', async e => {
     if (row?.getAttribute('aria-busy') === 'true') return;
     const want = !notifyOn;
     row?.setAttribute('aria-busy', 'true');
-    row?.setAttribute('aria-checked', String(want));
-    row?.querySelector('.switch')?.classList.toggle('on', want);
+    status(want ? '正在开启通知…' : '正在关闭通知…');
     // Called synchronously in the tap: iOS needs Notification.requestPermission() before any await.
     const done = want ? enableNotify() : disableNotify();
-    Promise.resolve(done).then(() => { row?.removeAttribute('aria-busy'); paintNotifySwitch(); });
-  }
-  else if (act === 'notifyTest') {
-    closeSheet();
-    const r = await post('/api/push/test').catch(() => null);
-    status(r?.ok ? '已发送测试通知，几秒内应该收到' : '发送失败', Boolean(r?.ok));
+    Promise.resolve(done).catch(e => status(e.message, false)).finally(() => { row?.removeAttribute('aria-busy'); paintNotifySwitch(); });
   }
   else if (act === 'appUpdate') {
     if (apkUpdate()) { closeSheet(); installAppUpdate(); }
