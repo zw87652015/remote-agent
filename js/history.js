@@ -399,7 +399,11 @@ function pruneEchoes(chat) {
     // A send that vanished with a dead socket would otherwise spin "发送中…" forever.
     if (Date.now() - p.at > (p.confirmed ? 60000 : 120000)) return false;
     if (p.sel !== viewSel) return true;
-    if (humans.filter(it => echoTextMatches(it, p.text)).length > p.before) return false;
+    const matches = humans.filter(it => echoTextMatches(it, p.text)).length;
+    if (matches > p.before) return false;
+    // Once the send is acknowledged, a human item stamped after the click is enough: the extracted
+    // text can differ from the typed text (mentions, attachments), which would leave the echo forever.
+    if (p.confirmed && humans.some(it => it.sentAt && it.sentAt >= p.at - 2000)) return false;
     if (p.kind === 'queue' && queued.some(t => echoTextMatches({ t }, p.text))) return false;
     return true;
   });
@@ -457,7 +461,7 @@ function renderChat(chat, stale, loading = false) {
   $('empty').firstChild.textContent = I18N.tr(imageOnly ? '电脑端正在查看图片，暂无已同步的对话。关闭图片预览后会自动恢复。' : loading ? '正在加载对话…' : '没找到聊天面板。');
   $('emptyHint').hidden = loading || imageOnly;
   $('older').hidden = !chat || chat.earlier === false;
-  $('pickMode').hidden = currentApp === 'devin' || !chat?.mode;
+  $('pickMode').hidden = currentApp === 'devin' || currentApp === 'cursor' || !chat?.mode;
   $('pickModel').hidden = false;
   if (chat?.mode) { $('pickMode').textContent = (chat.mode === 'Bypass Permissions' ? '⚠绕过' : chat.mode) + ' ▾'; $('pickMode').title = chat.mode; }
   $('pickMode').classList.toggle('bypass', chat?.mode === 'Bypass Permissions');
