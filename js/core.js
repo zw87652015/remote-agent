@@ -7,7 +7,7 @@ const store = {
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const themeName = () => ({ dark: '深色', light: '浅色', auto: '跟随系统' })[store.get('theme') || 'dark'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const APP_VERSION = 'v144'; // keep in sync with the CACHE name in sw.js
+const APP_VERSION = 'v145'; // keep in sync with the CACHE name in sw.js
 
 let base = null, info = null, ws = null, authed = false, failures = 0;
 let windowReady = false;
@@ -107,7 +107,7 @@ function fitOrientation() {
   const t = window.screen.orientation?.type;
   document.body.classList.toggle('land', t ? t.startsWith('landscape') : window.screen.width > window.screen.height);
   // Screen size, not viewport: an open keyboard must never flip the layout.
-  document.body.classList.toggle('wide', Math.min(window.screen.width, window.screen.height) >= 600);
+  document.body.classList.toggle('wide', Math.min(window.screen.width, window.screen.height) >= 520);
   // .split = the rail layout. Width-based (not orientation): keyboards shrink only the
   // height, so near-square foldables and portrait tablets get the rail too.
   document.body.classList.toggle('split',
