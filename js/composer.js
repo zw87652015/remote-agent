@@ -250,7 +250,7 @@ function updateSendMode() {
    (focus, typed/restored text, attachments, mentions, recording, fusion welcome);
    collapsing waits out a 1.5 s grace so the pill never slides while a finger is in
    transit, and never while the mic is held. */
-let composeCompactTimer = 0;
+let composeCompactTimer = 0, composeExpandedAt = 0;
 function micHeld() { return $('mic')?.classList.contains('on') || (typeof voiceSession !== 'undefined' && !!voiceSession); }
 function composeCompactWanted() {
   return mode === 'chat'
@@ -267,6 +267,7 @@ function setComposeCompact(on) {
   const foot = document.querySelector('footer');
   const h0 = foot.offsetHeight;
   document.body.classList.toggle('composeCompact', on);
+  if (!on) composeExpandedAt = performance.now();
   const h1 = foot.offsetHeight;
   if (stick) list.scrollTop = list.scrollHeight;
   if (h0 !== h1 && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
@@ -286,11 +287,22 @@ function updateComposeCompact() {
     // Mic held: defer the flip; updateVoiceButton re-runs this when the gesture ends.
   }
 }
-// Tapping the compact capsule anywhere outside a button focuses the field (user gesture → iOS keyboard).
-document.querySelector('.composerBox').addEventListener('pointerup', e => {
-  if (!document.body.classList.contains('composeCompact') || e.target.closest('button')) return;
-  text.focus();
-});
+// Capture-phase so it runs before controls that re-appear under the same tap.
+// In compact: taps outside +/mic/stop just focus the field (user gesture → iOS keyboard).
+// Right after expanding, the same tap's ghost click would hit controls that were hidden
+// when the finger went down — swallow it for 400 ms.
+document.querySelector('.composerBox').addEventListener('click', e => {
+  if (document.body.classList.contains('composeCompact')) {
+    if (e.target.closest('#add, #mic, #stop')) return;
+    e.preventDefault(); e.stopPropagation();
+    text.focus();
+    return;
+  }
+  if (performance.now() - composeExpandedAt < 400
+    && e.target.closest('button') && !e.target.closest('#add, #mic, #stop')) {
+    e.preventDefault(); e.stopPropagation();
+  }
+}, true);
 $('fusionProject').onclick = () => { status('正在读取项目…'); send({ t: 'fusionProjects' }); };
 $('fusionA').onclick = () => send({ t: 'fusionSides', side: 'a' });
 $('fusionB').onclick = () => send({ t: 'fusionSides', side: 'b' });
