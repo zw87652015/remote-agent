@@ -678,6 +678,20 @@ function renderContext(info) {
   $('meterCtx').setAttribute('aria-label', $('meterCtx').title);
   $('meterCtx').onclick = () => showUsageDetails('context');
 }
+// Phones show the value text ("已用 56%") beside each ring whenever every meter fits that way next to
+// a readable title; otherwise the number moves inside the ring. Measured, so fonts/languages don't matter.
+let meterFitFrame = 0;
+function fitMeters() {
+  meterFitFrame = 0;
+  const body = document.body, m = $('meters');
+  if (body.classList.contains('wide') || !m.offsetParent) { body.classList.remove('metersText'); return; }
+  body.classList.add('metersText');
+  const fits = m.scrollWidth <= m.clientWidth + 1 && document.querySelector('.titleLabels').getBoundingClientRect().width >= 64;
+  if (!fits) body.classList.remove('metersText');
+}
+const queueFitMeters = () => { if (!meterFitFrame) meterFitFrame = requestAnimationFrame(fitMeters); };
+new MutationObserver(queueFitMeters).observe($('meters'), { childList: true, subtree: true, characterData: true });
+window.addEventListener('resize', queueFitMeters);
 const quotaCache = new Map();
 const quotaKey = () => [currentComputer()?.id || '', ...viewSel.split('|').slice(0, 2)].join('|');
 function renderQuota(m) {
