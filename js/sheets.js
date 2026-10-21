@@ -672,6 +672,7 @@ function renderContext(info) {
   const fill = $('meterCtxFill');
   fill.style.width = (n ?? 0) + '%';
   fill.parentElement.style.setProperty('--pct', n ?? 0);
+  fill.parentElement.dataset.n = n == null ? '' : Math.round(n);
   fill.className = meterFill(n, basis);
   $('meterCtx').title = '上下文 · ' + (basis === 'remaining' ? '剩余' : '已用') + ' ' + (n ?? '–') + '%';
   $('meterCtx').setAttribute('aria-label', $('meterCtx').title);
@@ -714,7 +715,7 @@ function renderQuota(m) {
     const n = b.pct == null ? null : Math.max(0, Math.min(100, Number(b.pct)));
     const num = n == null ? (b.value ?? '未获取') : (basis === 'remaining' ? '剩余' : '已用') + `${n}%`;
     const label = /week|每周|周额度/i.test(b.label) ? '周额度' : /daily|每日|日额度/i.test(b.label) ? '日额度' : b.label;
-    return `<button class="meter" type="button" title="${esc(b.label + ' · ' + basis + ' · ' + (b.reset || ''))}" aria-label="${esc(b.label + ' ' + num)}"><span class="track" style="--pct:${n ?? 0}"><i class="${meterFill(n, basis)}" style="width:${n ?? 0}%"></i></span><span class="meterText"><span class="meterLabel">${esc(label)}</span><b>${esc(String(num))}</b></span></button>`;
+    return `<button class="meter" type="button" title="${esc(b.label + ' · ' + basis + ' · ' + (b.reset || ''))}" aria-label="${esc(b.label + ' ' + num)}"><span class="track" style="--pct:${n ?? 0}" data-n="${n == null ? '' : Math.round(n)}"><i class="${meterFill(n, basis)}" style="width:${n ?? 0}%"></i></span><span class="meterText"><span class="meterLabel">${esc(label)}</span><b>${esc(String(num))}</b></span></button>`;
   }).join('');
   if (when) $('quotaMeters').insertAdjacentHTML('beforeend', `<span class="quotaUpdated">${m.cached ? '缓存 ' : ''}${esc(when)}</span>`);
   $('quotaMeters').querySelectorAll('button').forEach(btn => btn.onclick = () => showUsageDetails('quota'));
