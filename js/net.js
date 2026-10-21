@@ -550,7 +550,7 @@ async function connect() {
         queueChatRender(chat, !!m.cached || obscured, m.sel);
       }
     }
-    else if (m.t === 'draft') { if ((m.draftEpoch || '') === draftEpoch && (!m.sel || m.sel === viewSel)) { if ((text.value === '' || text.value === mirroredDraft) && m.text !== text.value) { text.value = m.text; autosize(); } mirroredDraft = m.text; } }
+    else if (m.t === 'draft') { if (!questionCompose && (m.draftEpoch || '') === draftEpoch && (!m.sel || m.sel === viewSel)) { if ((text.value === '' || text.value === mirroredDraft) && m.text !== text.value) { text.value = m.text; autosize(); } mirroredDraft = m.text; } }
     else if (m.t === 'draftAck') { if ((m.draftEpoch || '') === draftEpoch && m.ok && (!m.sel || m.sel === viewSel) && text.value === m.text) mirroredDraft = m.text; }
     else if (m.t === 'historyDone') finishHistory(m);
     else if (m.t === 'thread') applySelection(m);
@@ -571,7 +571,7 @@ async function connect() {
       finishPending(['正在读取额度…']);
     }
     else if (m.t === 'attached') {
-      if (m.closed) { setWindowReady(m.ready === true); status('这个窗口已经关闭，请重新选择', false); send({ t: 'windows' }); return; }
+      if (m.closed) { setWindowReady(m.ready === true); status('这个窗口已经关闭，请重新选择', false); send({ t: 'windows' }); if (m.initial) { connHide(); showWindows(); } return; }
       if (m.plans) appPlans = { ...appPlans, ...m.plans };
       rememberAgentOpen(m);
       if (m.keepQuota) { applySelection(m); setWindowReady(true); return; }
@@ -589,7 +589,7 @@ async function connect() {
       currentProject = m.app === 'fusion' ? '' : (m.project || winLabel(m.title).name);
       updateAppText(); updateTitle();
       renderChat(null, false, true);
-      if (m.initial && m.app === 'codex' && !m.threadId) connContentReady();
+      if (m.initial && m.app === 'codex') connContentReady();
       renderContext(null);
       $('quotaMeters').innerHTML = '';
       $('quotaMeters').title = '';
