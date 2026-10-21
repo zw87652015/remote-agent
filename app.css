@@ -432,8 +432,8 @@ main { flex: 1; min-height: 0; position: relative; }
 #empty { color: var(--fg-3); text-align: center; margin-top: 30vh; padding: 0 20px; font-size: 14px; }
 .msg { margin: 14px 0; min-width: 0; overflow-wrap: anywhere; }
 .msg.toolrow, .msg.thinking { margin: 4px 0; }
-.human { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
-.human > .humanContent { flex-basis: 100%; }
+.human { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+.human > .humanContent { width: 85%; }
 .human .sentImage { display: inline-flex; max-width: 140px; }
 .human .sentImage img { width: 140px; height: 104px; object-fit: cover; }
 .human .bubble {
@@ -441,8 +441,7 @@ main { flex: 1; min-height: 0; position: relative; }
   border-radius: 20px 20px 6px 20px; white-space: pre-wrap; font-size: 16px; line-height: 1.5;
 }
 .humanContent { max-width: 85%; min-width: 0; }
-.humanContent .bubble { max-width: 100%; }
-body.land .humanContent .bubble { width: fit-content; margin-left: auto; }
+.humanContent .bubble { max-width: 100%; width: fit-content; margin-left: auto; }
 .messageMeta { display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-top: 4px; color: var(--fg-4); font-size: 11px; }
 .messageMeta button { min-height: 24px; font-size: 11px; padding: 0 6px; background: transparent; color: var(--fg-3); }
 .msg.human .rv { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; align-self: center; margin-left: 6px; }
