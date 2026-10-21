@@ -260,7 +260,7 @@ body.devin #quotaMeters { flex: none; }
    that scroll inside the capsule. */
 /* The meters keep their full width (the title gives way and ellipsizes instead); only when
    they would push the toggle/menu off screen does the capsule cap out and scroll. */
-body:not(.wide) #meters { gap: 5px; padding: 0 6px; flex: none; max-width: calc(100% - 192px); }
+body:not(.wide) #meters { gap: 5px; padding: 0 6px; flex: none; max-width: calc(100% - 172px); }
 body:not(.wide) #quotaMeters { gap: 5px; flex: none; }
 body:not(.wide) #title { flex: 1 1 0; min-width: 84px; }
 body:not(.wide) .titleArrow, body:not(.wide) #titlePlan { display: none; }
@@ -294,12 +294,14 @@ body:not(.wide) #fusionHeader { flex: 0 1 auto; }
 /* Thin phones: the chat/terminal tabs stack into one toggle — the current mode in front, the other
    peeking from behind. Any tap swaps them: both glide to the same spot, trade layers there (opaque
    discs, so no icon shows through) and separate again. */
-body:not(.wide) .seg { position: relative; width: 48px; padding: 0; gap: 0; background: transparent; }
+body:not(.wide) .seg { position: relative; width: 46px; padding: 0; gap: 0; background: transparent; }
 body:not(.wide) .seg button {
   position: absolute; top: 2px; left: 0; z-index: 1; translate: 14px 0; scale: .86;
   background: var(--s1); color: var(--fg-4); box-shadow: 0 0 0 2px var(--bg);
   transition: translate .22s var(--ease), scale .22s var(--ease), background-color .22s var(--ease), color .22s var(--ease), z-index 0s linear .11s;
 }
+/* The three-dot glyph is narrow: a slimmer button closes the dead gap after the toggle. */
+body:not(.wide) #menuBtn { width: 28px; margin-left: -4px; }
 body:not(.wide) .seg button.on { z-index: 2; translate: 0 0; scale: 1; background: var(--s3); color: var(--fg-hi); }
 #menuBtn {
   flex: none; width: 36px; height: 36px; min-height: 0; padding: 0; border-radius: 50%;
