@@ -431,6 +431,26 @@ function pendingEchoEls() {
     return el;
   });
 }
+const executionRecordsShown = () => store.get('show-execution-' + currentApp) === '1';
+function executionRecord(it) {
+  return it.k === 'tool' && (it.execution || ['command', 'read', 'search', 'explore'].includes(it.kind)
+    || String(it.i).includes(':exec:'));
+}
+function visibleChatItems(items, busy) {
+  const shown = executionRecordsShown();
+  const latestTurn = busy ? Math.max(0, items.findLastIndex(it => it.k === 'human')) : items.length;
+  return items.filter((it, n) => {
+    if (!executionRecord(it)) return !(it.k === 'tool' && it.done);
+    const attention = it.keep || it.b?.some(b => /^(?:run(?! in background)|allow|approve|reject|deny|retry|confirm|continue|accept)\b|^(?:运行|允许|批准|拒绝|重试|确认|继续|接受)/i.test(b))
+      || /(?:^|\n)\s*(?:error\b|failed\b|permission denied\b|(?:(?:process|command) )?exit(?:ed)?(?: with)? code[: ]+[1-9]\d*|错误|失败|拒绝)/i.test([it.t, it.output].filter(Boolean).join('\n'));
+    return shown || attention || (!it.done && n >= latestTurn);
+  });
+}
+function toggleExecutionRecords() {
+  store.set('show-execution-' + currentApp, executionRecordsShown() ? '0' : '1');
+  renderChat(lastChat, chatStale);
+  showMainMenu();
+}
 function renderChat(chat, stale, loading = false) {
   if (chat) reconcileSent(chat);
   chat = withMessageTimes(chat);
@@ -474,7 +494,7 @@ function renderChat(chat, stale, loading = false) {
   if (chat && 'context' in chat) renderContext(chat.context);
   const imageOnly = chat?.imagePreview && !chat.items.length;
   $('empty').hidden = !!chat && !imageOnly && !chat.loginRequired;
-  $('empty').firstChild.textContent = I18N.tr(chat?.loginRequired ? '请先在电脑端登录此窗口的 Codex，再新建会话' : imageOnly ? '电脑端正在查看图片，暂无已同步的对话。关闭图片预览后会自动恢复。' : loading ? '正在加载对话…' : '没找到聊天面板。');
+  $('empty').firstChild.textContent = I18N.tr(chat?.loginRequired ? '项目窗口已打开，请在电脑端登录此窗口的 Codex，登录后重新选择会话' : imageOnly ? '电脑端正在查看图片，暂无已同步的对话。关闭图片预览后会自动恢复。' : loading ? '正在加载对话…' : '没找到聊天面板。');
   $('emptyHint').hidden = loading || imageOnly || !!chat?.loginRequired;
   $('older').hidden = !chat || chat.earlier === false;
   $('pickMode').hidden = currentApp === 'devin' || currentApp === 'cursor' || !chat?.mode;
@@ -528,9 +548,10 @@ function renderChat(chat, stale, loading = false) {
   $('cachedMore').hidden = !V.older;
   $('cachedMore').textContent = `↑ 显示更早的本地记录（${V.older} 条）`;
   const stick = followBottom || sessionChanged;
+  const visibleItems = visibleChatItems(V.items, chat.busy);
   // Anchor on the first visible item so loading older messages doesn't jump.
   let anchor = savedAnchor;
-  if (anchor && !V.items.some(it => String(it.i) === anchor.id && !(it.k === 'tool' && it.done))) anchor = null;
+  if (anchor && !visibleItems.some(it => String(it.i) === anchor.id)) anchor = null;
   if (!stick && !anchor) {
     const top = list.getBoundingClientRect().top;
     let lo = 0, hi = itemsEl.children.length;
@@ -539,7 +560,7 @@ function renderChat(chat, stale, loading = false) {
       if (itemsEl.children[mid].getBoundingClientRect().bottom > top) hi = mid;
       else lo = mid + 1;
     }
-    const retained = new Set(V.items.filter(it => !(it.k === 'tool' && it.done)).map(it => String(it.i)));
+    const retained = new Set(visibleItems.map(it => String(it.i)));
     for (let n = lo; n < itemsEl.children.length; n++) {
       const el = itemsEl.children[n];
       if (retained.has(el.dataset.i)) { anchor = { id: el.dataset.i, top: el.getBoundingClientRect().top - top }; break; }
@@ -549,7 +570,6 @@ function renderChat(chat, stale, loading = false) {
       if (retained.has(el.dataset.i)) { anchor = { id: el.dataset.i, top: el.getBoundingClientRect().top - top }; break; }
     }
   }
-  const visibleItems = V.items.filter(it => !(it.k === 'tool' && it.done));
   const els = visibleItems.map(it => {
     const key = JSON.stringify(it);
     const hit = cache.get(it.i);
@@ -608,7 +628,7 @@ function renderChat(chat, stale, loading = false) {
   $('taskChip').hidden = !latestTasks || (latestTasks.done >= latestTasks.total && !chat.busy);
   if (latestTasks) $('taskChip').innerHTML = `<span>${I18N.tr('任务')}</span> ${latestTasks.done}/${latestTasks.total}`;
   if (sheetKind === 'tasks') showTasks();
-  const live = new Set(visibleItems.map(it => it.i));
+  const live = new Set(V.items.map(it => it.i));
   for (const k of cache.keys()) if (!live.has(k)) { thoughtObserver.unobserve(cache.get(k).el); cache.delete(k); }
 
   // A cached render is display-only: no action buttons, questions or queue actions until the fresh chat arrives.
@@ -636,13 +656,15 @@ itemsEl.addEventListener('click', e => { const b = e.target.closest('[data-codex
 $('taskChip').onclick = () => showTasks();
 itemsEl.addEventListener('toggle', e => { const id = e.target.dataset.task; if (id) e.target.open ? taskOpen.add(id) : taskOpen.delete(id); }, true);
 $('qnBar').addEventListener('click', e => {
+  const compose = e.target.closest('[data-question-compose]');
+  if (compose) { setQuestionCompose(questionCompose?.id === compose.dataset.questionCompose ? null : compose.dataset.questionCompose); return; }
   const b = e.target.closest('[data-action][data-request]');
   if (b) {
     const id = b.dataset.request, n = Number(b.dataset.action);
     const request = qnState?.requests?.find(r => r.id === id);
     const fields = !id.startsWith('async:') || n === request.buttons.length - 1
       ? [...$('qnBar').querySelectorAll('[data-field]')].filter(el => el.dataset.request === id).map(el => ({ n: Number(el.dataset.field), value: el.value })) : [];
-    sendQuestion({ t: 'codexRequest', id, n, fields });
+    sendQuestion({ t: 'codexRequest', id, n, fields, ...(id.startsWith('async:') && n < request.buttons.length - 2 ? { advance: true } : {}) });
   }
 });
 // The Agent's ask-question tool: a card with the questions, options, a free-text answer and submit / skip.
@@ -663,12 +685,35 @@ function sendQuestion(message) {
   status('正在提交回答…');
   send({ ...message, requestId });
 }
+function setQuestionCompose(id) {
+  if (qnPending) return;
+  saveDraft();
+  questionCompose = id ? { id, sel: viewSel } : null;
+  restoreDraft();
+  updateAppText();
+  qnSig = '';
+  renderQuestions(qnState);
+  updateSendMode();
+  if (id) text.focus();
+}
+function submitQuestionCompose() {
+  const request = qnState?.requests?.find(r => r.id === questionCompose?.id);
+  if (!request || !text.value.trim()) return;
+  saveDraft();
+  sendQuestion({ t: 'codexRequest', id: request.id, n: request.buttons.length - 1, fields: [{ n: 0, value: text.value }] });
+}
 function finishQuestion(m) {
   if (!qnPending || m.requestId !== qnPending.requestId) return;
   const pending = qnPending;
   qnPending = null;
   if (pending.sel !== viewSel) return;
   if (m.ok && pending.message.id) {
+    if (questionCompose?.id === pending.message.id) setQuestionCompose(null);
+    const answerKey = [currentComputer()?.id || '', viewSel, 'chat', pending.message.id].join('|');
+    drafts.delete(answerKey); draftMentions.delete(answerKey);
+    if (pending.message.id.startsWith('async:') && (pending.message.advance || pending.message.n === (qnState?.requests?.find(r => r.id === pending.message.id)?.buttons.length || 0) - 1)) {
+      qnState = { ...qnState, requests: qnState.requests.filter(r => r.id !== pending.message.id) };
+    }
     for (const key of qnDrafts.keys()) if (key.startsWith(pending.message.id + '|')) qnDrafts.delete(key);
   }
   qnSig = '';
@@ -678,6 +723,14 @@ function finishQuestion(m) {
 function renderQuestions(qs) {
   const bar = $('qnBar');
   if (qnView !== viewSel) { qnView = viewSel; qnSig = ''; qnPending = null; qnDrafts.clear(); }
+  if (questionCompose && (questionCompose.sel !== viewSel || !qs?.codex || !qs.requests.some(r => r.id === questionCompose.id))) {
+    const prior = questionCompose;
+    if (prior.sel === viewSel) saveDraft();
+    questionCompose = null;
+    updateAppText();
+    if (prior.sel === viewSel) restoreDraft();
+    updateSendMode();
+  }
   qnState = qs;
   bar.classList.toggle('codex', !!qs?.codex);
   const sig = JSON.stringify(qs);
@@ -688,14 +741,14 @@ function renderQuestions(qs) {
     const focusKey = focused?.matches('[data-field]') ? questionFieldKey(focused) : null;
     const selection = focusKey ? [focused.selectionStart, focused.selectionEnd] : null;
     const expanded = new Set([...bar.querySelectorAll('details[open]')].map(el => el.dataset.question));
-    bar.innerHTML = `<div class="qnHead">Codex 等待你回答<span class="qnCount">${qs.requests.length} 个请求</span></div>` + qs.requests.map(r => {
+    bar.innerHTML = `<div class="qnHead">Codex 等待你${qs.requests.some(r => r.id.startsWith('approval:')) ? '审批' : '回答'}<span class="qnCount">${qs.requests.length} 个请求</span></div>` + qs.requests.map(r => {
       const lines = r.text.trim().split('\n'), heading = lines.shift();
       const remaining = lines.join('\n').trim();
       return `<section class="qnRequest"><div class="qnQ">${esc(heading)}</div>`
       + (remaining ? `<details class="qnDetails" data-question="${esc(r.id)}" ${expanded.has(r.id) ? 'open' : ''}><summary>展开问题详情</summary>${esc(remaining)}</details>` : '')
       + (r.id.startsWith('async:') ? `<div class="qnOpts">${r.buttons.slice(0, -2).map((b, n) => `<button class="qnOpt ${b.selected ? 'on' : ''}" data-request="${esc(r.id)}" data-action="${n}" aria-pressed="${!!b.selected}" ${b.disabled ? 'disabled' : ''}>${esc(b.label)}</button>`).join('')}</div>` : '')
       + r.fields.map((f, n) => `<label class="qnFree">${esc(f.label)}${f.options ? `<select data-request="${esc(r.id)}" data-field="${n}">${f.options.map(o => `<option value="${esc(o.value)}" ${o.value === f.value ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}</select>` : `<input data-request="${esc(r.id)}" data-field="${n}" type="${f.type === 'password' ? 'password' : 'text'}" value="${esc(f.value)}">`}</label>`).join('')
-      + `<div class="qnAct">${r.buttons.map((b, n) => r.id.startsWith('async:') && n < r.buttons.length - 2 ? '' : `<button data-request="${esc(r.id)}" data-action="${n}" aria-pressed="${!!b.selected}" ${b.disabled ? 'disabled' : ''}>${esc(b.label)}</button>`).join('')}</div></section>`; }).join('');
+      + `<div class="qnAct">${r.id.startsWith('async:') ? `<button data-question-compose="${esc(r.id)}">${questionCompose?.id === r.id ? '取消对话框回答' : '用对话框回答'}</button>` : ''}${r.buttons.map((b, n) => r.id.startsWith('async:') && n < r.buttons.length - 2 ? '' : `<button data-request="${esc(r.id)}" data-action="${n}" aria-pressed="${!!b.selected}" ${b.disabled ? 'disabled' : ''}>${esc(b.label)}</button>`).join('')}</div></section>`; }).join('');
     bar.classList.toggle('show', qs.requests.length > 0);
     bar.querySelectorAll('[data-field]').forEach(el => {
       const key = questionFieldKey(el);
