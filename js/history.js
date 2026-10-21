@@ -449,6 +449,7 @@ function renderChat(chat, stale, loading = false) {
     $('older').disabled = false;
     $('historyStatus').hidden = true;
   }
+  if (currentApp === 'codex' && chat?.earlier === true) historyAtEnd = false;
   if (chat && previous?.thread === chat.thread && historyExpanded && currentApp !== 'devin') {
     const rows = historyRequest ? [...chat.items, ...previous.items] : [...previous.items, ...chat.items];
     const updates = new Map(chat.items.map(it => [it.i, it]));
@@ -472,9 +473,9 @@ function renderChat(chat, stale, loading = false) {
   paintWorkdir(chat?.workdir);
   if (chat && 'context' in chat) renderContext(chat.context);
   const imageOnly = chat?.imagePreview && !chat.items.length;
-  $('empty').hidden = !!chat && !imageOnly;
-  $('empty').firstChild.textContent = I18N.tr(imageOnly ? '电脑端正在查看图片，暂无已同步的对话。关闭图片预览后会自动恢复。' : loading ? '正在加载对话…' : '没找到聊天面板。');
-  $('emptyHint').hidden = loading || imageOnly;
+  $('empty').hidden = !!chat && !imageOnly && !chat.loginRequired;
+  $('empty').firstChild.textContent = I18N.tr(chat?.loginRequired ? '请先在电脑端登录此窗口的 Codex，再新建会话' : imageOnly ? '电脑端正在查看图片，暂无已同步的对话。关闭图片预览后会自动恢复。' : loading ? '正在加载对话…' : '没找到聊天面板。');
+  $('emptyHint').hidden = loading || imageOnly || !!chat?.loginRequired;
   $('older').hidden = !chat || chat.earlier === false;
   $('pickMode').hidden = currentApp === 'devin' || currentApp === 'cursor' || !chat?.mode;
   $('pickModel').hidden = false;
@@ -686,10 +687,15 @@ function renderQuestions(qs) {
     const focused = bar.contains(document.activeElement) ? document.activeElement : null;
     const focusKey = focused?.matches('[data-field]') ? questionFieldKey(focused) : null;
     const selection = focusKey ? [focused.selectionStart, focused.selectionEnd] : null;
-    bar.innerHTML = qs.requests.map(r => `<div class="qnQ">${esc(r.text)}</div>`
-      + r.fields.map((f, n) => `<label class="qnFree">${esc(f.label)}${f.options ? `<select data-request="${esc(r.id)}" data-field="${n}">${f.options.map(o => `<option value="${esc(o.value)}" ${o.value === f.value ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}</select>` : `<input data-request="${esc(r.id)}" data-field="${n}" type="${f.type === 'password' ? 'password' : 'text'}" value="${esc(f.value)}">`}</label>`).join('')
+    const expanded = new Set([...bar.querySelectorAll('details[open]')].map(el => el.dataset.question));
+    bar.innerHTML = `<div class="qnHead">Codex 等待你回答<span class="qnCount">${qs.requests.length} 个请求</span></div>` + qs.requests.map(r => {
+      const lines = r.text.trim().split('\n'), heading = lines.shift();
+      const remaining = lines.join('\n').trim();
+      return `<section class="qnRequest"><div class="qnQ">${esc(heading)}</div>`
+      + (remaining ? `<details class="qnDetails" data-question="${esc(r.id)}" ${expanded.has(r.id) ? 'open' : ''}><summary>展开问题详情</summary>${esc(remaining)}</details>` : '')
       + (r.id.startsWith('async:') ? `<div class="qnOpts">${r.buttons.slice(0, -2).map((b, n) => `<button class="qnOpt ${b.selected ? 'on' : ''}" data-request="${esc(r.id)}" data-action="${n}" aria-pressed="${!!b.selected}" ${b.disabled ? 'disabled' : ''}>${esc(b.label)}</button>`).join('')}</div>` : '')
-      + `<div class="qnAct">${r.buttons.map((b, n) => r.id.startsWith('async:') && n < r.buttons.length - 2 ? '' : `<button data-request="${esc(r.id)}" data-action="${n}" aria-pressed="${!!b.selected}" ${b.disabled ? 'disabled' : ''}>${esc(b.label)}</button>`).join('')}</div>`).join('');
+      + r.fields.map((f, n) => `<label class="qnFree">${esc(f.label)}${f.options ? `<select data-request="${esc(r.id)}" data-field="${n}">${f.options.map(o => `<option value="${esc(o.value)}" ${o.value === f.value ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}</select>` : `<input data-request="${esc(r.id)}" data-field="${n}" type="${f.type === 'password' ? 'password' : 'text'}" value="${esc(f.value)}">`}</label>`).join('')
+      + `<div class="qnAct">${r.buttons.map((b, n) => r.id.startsWith('async:') && n < r.buttons.length - 2 ? '' : `<button data-request="${esc(r.id)}" data-action="${n}" aria-pressed="${!!b.selected}" ${b.disabled ? 'disabled' : ''}>${esc(b.label)}</button>`).join('')}</div></section>`; }).join('');
     bar.classList.toggle('show', qs.requests.length > 0);
     bar.querySelectorAll('[data-field]').forEach(el => {
       const key = questionFieldKey(el);
@@ -1034,8 +1040,9 @@ function forTerminalPaste(text) {
 }
 const chatImageUrls = new Map();
 function loadChatImages(root) {
-  return Promise.all([...root.querySelectorAll('[data-chat-image]')].map(img => {
+  return Promise.all([...root.querySelectorAll('[data-chat-image], .sentImage img')].map(img => {
     const id = img.dataset.chatImage;
+    if (!id) return img.decode().catch(() => {});
     const key = `${currentComputer()?.id}|${id}`;
     if (!chatImageUrls.has(key)) chatImageUrls.set(key, api('/api/chat-image/' + id).then(async response => {
       if (!response.ok) throw new Error('图片读取失败');
@@ -1110,6 +1117,13 @@ async function copyText(text, btn, terminal = true) {
 document.addEventListener('click', async e => {
   const imageCopy = e.target.closest('[data-copy-image]');
   if (imageCopy) { e.preventDefault(); await copyGeneratedImage(imageCopy.closest('.generatedImage').querySelector('img'), imageCopy); return; }
+  const sentImage = e.target.closest('#items .sentImage');
+  if (sentImage) {
+    e.preventDefault();
+    const img = sentImage.querySelector('img');
+    if (img.complete && img.naturalWidth) openChatImage(img.currentSrc || img.src);
+    return;
+  }
   const copyBtn = e.target.closest('.copy');
   const copyCode = !copyBtn && !e.target.closest('a') && e.target.closest('code.copyable');
   if (copyBtn || copyCode) {
@@ -1122,6 +1136,10 @@ document.addEventListener('click', async e => {
   const f = !b && e.target.closest('#items [data-file]');
   if (f) return openFile(f.dataset.file);
   if (!b) return;
+  if (currentApp === 'codex' && b.dataset.actionLabel === 'Copy message') {
+    await copyText(b.closest('.msg').copyText, b, false);
+    return;
+  }
   if (RISKY.test(b.textContent.trim()) && !await ask(`确定要点「${b.textContent.trim()}」吗？`, b.textContent.trim())) return;
   b.closest('.btns')?.querySelectorAll('button').forEach(button => { button.disabled = true; });
   send({ t: 'click', item: b.dataset.item, n: Number(b.dataset.n), actionId: b.dataset.actionId, label: b.dataset.actionLabel, sel: viewSel });
