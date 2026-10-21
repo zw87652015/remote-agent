@@ -275,7 +275,16 @@ body:not(.wide) .meter .track::before {
   content: attr(data-n); position: absolute; inset: 0; z-index: 1; display: grid; place-items: center;
   font-size: 9px; font-weight: 700; letter-spacing: -.03em; color: var(--fg-hi); font-variant-numeric: tabular-nums;
 }
-body:not(.wide) .meterText { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
+/* Enough room (measured in fitMeters): the value text sits beside a smaller ring instead. */
+body.metersText:not(.wide) .meter .track { width: 18px; height: 18px; }
+body.metersText:not(.wide) .meter .track::after { inset: 3px; }
+body.metersText:not(.wide) .meter .track::before { content: none; }
+body.metersText:not(.wide) #meters { gap: 8px; padding: 0 10px; }
+body.metersText:not(.wide) #quotaMeters { gap: 8px; }
+body.metersText:not(.wide) .meter { gap: 5px; }
+body.metersText:not(.wide) .meter b { font-size: 11px; }
+body.metersText:not(.wide) .meter .meterLabel { display: block; }
+body:not(.wide):not(.metersText) .meterText { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
 body:not(.wide) .fusionMetricText { display: none; }
 body:not(.wide) #fusionHeader { flex: 0 1 auto; }
 
