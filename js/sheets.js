@@ -686,11 +686,14 @@ function fitMeters() {
   const body = document.body, m = $('meters');
   if (body.classList.contains('wide') || !m.offsetParent) { body.classList.remove('metersText'); return; }
   body.classList.add('metersText');
-  const fits = m.scrollWidth <= m.clientWidth + 1 && document.querySelector('.titleLabels').getBoundingClientRect().width >= 64;
+  // The title keeps 64px, or less when its own text is shorter than that (e.g. "Devin").
+  const titleNeeds = Math.min(64, Math.max($('titleText').scrollWidth, $('titleProject').scrollWidth));
+  const fits = m.scrollWidth <= m.clientWidth + 1 && $('menuBtn').getBoundingClientRect().right <= window.innerWidth
+    && document.querySelector('.titleLabels').getBoundingClientRect().width >= titleNeeds;
   if (!fits) body.classList.remove('metersText');
 }
 const queueFitMeters = () => { if (!meterFitFrame) meterFitFrame = requestAnimationFrame(fitMeters); };
-new MutationObserver(queueFitMeters).observe($('meters'), { childList: true, subtree: true, characterData: true });
+for (const id of ['meters', 'title']) new MutationObserver(queueFitMeters).observe($(id), { childList: true, subtree: true, characterData: true });
 window.addEventListener('resize', queueFitMeters);
 const quotaCache = new Map();
 const quotaKey = () => [currentComputer()?.id || '', ...viewSel.split('|').slice(0, 2)].join('|');
