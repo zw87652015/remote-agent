@@ -321,6 +321,8 @@ let deferredRender = false;
 let chatScrolling = false, chatTouching = false, scrollIdle = 0, deferredScrollRender = false, lastScrollTop = 0;
 let historyRequest = null, historyRendering = false, historyExpanded = false, historyArmed = false, historySerial = 0, historyAtEnd = false;
 let pendingHistoryStatus = null;
+let turnNavTimer = 0, turnNavHeld = false, turnNavUser = false, turnNavCursor = null, turnNavPending = null;
+let turnNavPointer = null, turnNavSkipClick = false;
 let restoringChatScroll = false, readingAnchor = null;
 function captureChatAnchor() {
   const top = list.getBoundingClientRect().top;
@@ -474,6 +476,7 @@ function renderChat(chat, stale, loading = false) {
     menuCache.delete(menuCacheKey('effort'));
   }
   if (!chat || previous?.thread !== chat.thread) {
+    resetTurnNav();
     historyRequest = null; historyRendering = false; historyExpanded = false; historyArmed = false; historyAtEnd = false; readingAnchor = null; pendingHistoryStatus = null;
     $('older').disabled = false;
     $('historyStatus').hidden = true;
@@ -653,6 +656,7 @@ function renderChat(chat, stale, loading = false) {
   updateToBottom();
   noteSwitch(chat);
   if (SC.jump && SC.items.has(SC.jump)) { const j = SC.jump; SC.jump = null; scJump(j); }
+  completeTurnNavigation();
 }
 
 let subsOpen = false, queueOpen = store.get('queue-open') !== '0';
@@ -944,7 +948,150 @@ $('queueBar').onclick = async e => {
 function updateToBottom() {
   if (nearBottom()) $('toBottom').textContent = '↓ 最新';
   $('toBottom').style.display = nearBottom() ? 'none' : 'block';
+  updateTurnNav();
 }
+function updateTurnNav() {
+  const track = $('turnNavTrack'), nav = $('turnNav');
+  track.hidden = !itemsEl.querySelector(':scope > .human[data-i]') || list.scrollHeight <= list.clientHeight;
+  if (!track.hidden) {
+    const travel = track.clientHeight - nav.offsetHeight;
+    track.hidden = travel < 0;
+    if (!track.hidden) {
+      const progress = turnNavPointer?.dragging ? turnNavPointer.progress : list.scrollTop / (list.scrollHeight - list.clientHeight);
+      nav.style.top = Math.max(0, Math.min(1, progress)) * travel + 'px';
+    }
+  }
+}
+const turnNavSizeObserver = new ResizeObserver(updateTurnNav);
+for (const el of [$('listWrap'), itemsEl]) turnNavSizeObserver.observe(el);
+function resetTurnNav() {
+  clearTimeout(turnNavTimer);
+  if (turnNavPointer?.dragging) { chatTouching = chatScrolling = false; clearTimeout(scrollIdle); }
+  turnNavPointer = null; turnNavSkipClick = false;
+  turnNavHeld = turnNavUser = false;
+  turnNavCursor = turnNavPending = null;
+  $('turnNav').classList.remove('show');
+}
+function showTurnNav() {
+  if (!itemsEl.querySelector(':scope > .human[data-i]')) return;
+  $('turnNav').classList.add('show');
+  clearTimeout(turnNavTimer);
+  if (!turnNavHeld) turnNavTimer = setTimeout(() => {
+    $('turnNav').classList.remove('show');
+    turnNavUser = false;
+  }, 1500);
+}
+function turnNavGesture() {
+  turnNavCursor = turnNavPending = null;
+  turnNavUser = true;
+  showTurnNav();
+}
+function conversationTurns() {
+  return [...(SC.key ? SC.items.values() : lastChat?.items || [])]
+    .filter(it => it.k === 'human')
+    .sort((a, b) => (a.order ?? acpNum(a.i)) - (b.order ?? acpNum(b.i)));
+}
+function jumpToTurn(id) {
+  clearTimeout(scrollIdle);
+  chatScrolling = false;
+  let el = itemsEl.querySelector(`[data-i="${CSS.escape(String(id))}"]`);
+  if (!el || deferredScrollRender) {
+    if (!el) {
+      const all = [...SC.items.values()].sort((a, b) => (a.order ?? acpNum(a.i)) - (b.order ?? acpNum(b.i)));
+      SC.show = Math.max(SC.show, all.length - all.findIndex(it => it.i === id));
+    }
+    deferredScrollRender = false;
+    historyRendering = true;
+    renderChat(lastChat, chatStale);
+    el = itemsEl.querySelector(`[data-i="${CSS.escape(String(id))}"]`);
+  }
+  if (!el) return;
+  historyArmed = false;
+  restoreChatPosition({ id: String(id), top: 8 });
+  lastScrollTop = list.scrollTop;
+  turnNavCursor = { id, sel: viewSel, thread: lastChat.thread };
+  el.classList.add('flash');
+  setTimeout(() => el.classList.remove('flash'), 1800);
+  updateToBottom();
+  showTurnNav();
+}
+function completeTurnNavigation() {
+  if (!turnNavPending) return;
+  const pending = turnNavPending;
+  if (pending.sel !== viewSel || pending.thread !== lastChat?.thread) { turnNavPending = null; return; }
+  const turns = conversationTurns(), pos = turns.findIndex(it => it.i === pending.before);
+  if (pos > 0) { turnNavPending = null; jumpToTurn(turns[pos - 1].i); }
+  else if (!historyRequest) turnNavPending = null;
+}
+function navigateTurn(direction) {
+  if (!lastChat || chatTouching) return;
+  const turns = conversationTurns();
+  let target;
+  if (turnNavCursor?.sel === viewSel && turnNavCursor.thread === lastChat.thread) {
+    target = turns[turns.findIndex(it => it.i === turnNavCursor.id) + direction];
+  } else {
+    const top = list.getBoundingClientRect().top + 8;
+    const humans = [...itemsEl.querySelectorAll(':scope > .human[data-i]')];
+    const el = direction < 0 ? humans.findLast(el => el.getBoundingClientRect().top < top - 2)
+      : humans.find(el => el.getBoundingClientRect().top > top + 2);
+    if (el) target = turns.find(it => String(it.i) === el.dataset.i);
+    else if (direction < 0 && humans.length) target = turns[turns.findIndex(it => String(it.i) === humans[0].dataset.i) - 1];
+  }
+  if (target) { turnNavPending = null; jumpToTurn(target.i); }
+  else if (direction < 0 && turns.length) {
+    turnNavPending = { sel: viewSel, thread: lastChat.thread, before: turns[0].i };
+    if (historyRequest) return;
+    clearTimeout(scrollIdle); chatScrolling = false;
+    loadOlderMessages();
+    if (!historyRequest && !deferredScrollRender) completeTurnNavigation();
+  }
+}
+$('previousTurn').onclick = () => navigateTurn(-1);
+$('nextTurn').onclick = () => navigateTurn(1);
+$('toBottom').addEventListener('click', resetTurnNav);
+$('turnNav').addEventListener('pointerdown', e => {
+  if (e.button !== 0 || turnNavPointer) return;
+  e.preventDefault();
+  const nav = $('turnNav');
+  turnNavSkipClick = false;
+  turnNavPointer = { id: e.pointerId, y: e.clientY, top: nav.offsetTop,
+    travel: $('turnNavTrack').clientHeight - nav.offsetHeight,
+    opened: nav.classList.contains('show') || nav.matches(':focus-within'), dragging: false };
+  e.target.setPointerCapture(e.pointerId);
+  turnNavHeld = true; showTurnNav();
+});
+$('turnNav').addEventListener('pointermove', e => {
+  const pointer = turnNavPointer;
+  if (!pointer || pointer.id !== e.pointerId) return;
+  const dy = e.clientY - pointer.y;
+  if (!pointer.dragging && Math.abs(dy) < 6) return;
+  e.preventDefault();
+  if (!pointer.dragging) {
+    pointer.dragging = true;
+    turnNavGesture();
+    chatTouching = chatScrolling = true;
+    pinnedBottom = false;
+    clearTimeout(scrollIdle);
+  }
+  pointer.progress = Math.max(0, Math.min(1, (pointer.top + dy) / pointer.travel));
+  list.scrollTop = pointer.progress * (list.scrollHeight - list.clientHeight);
+  readingAnchor = captureChatAnchor();
+  settleChatScroll();
+});
+for (const event of ['pointerup', 'pointercancel', 'lostpointercapture']) $('turnNav').addEventListener(event, e => {
+  const pointer = turnNavPointer;
+  if (!pointer || pointer.id !== e.pointerId) return;
+  turnNavSkipClick = event === 'pointerup' && (pointer.dragging || !pointer.opened);
+  turnNavPointer = null; turnNavHeld = false;
+  if (pointer.dragging) { chatTouching = false; settleChatScroll(); }
+  updateTurnNav(); showTurnNav();
+});
+$('turnNav').addEventListener('click', e => {
+  if (turnNavSkipClick) { e.preventDefault(); e.stopImmediatePropagation(); turnNavSkipClick = false; }
+}, true);
+$('turnNav').addEventListener('touchstart', e => {
+  e.stopPropagation();
+}, { passive: true });
 function paintHistoryStatus() {
   if (pendingHistoryStatus === null) return;
   $('older').disabled = !!historyRequest;
@@ -998,6 +1145,7 @@ function finishHistory(m) {
   if (m.earlier === false) historyAtEnd = true;
   showHistoryStatus(m.error || (m.blocked ? '生成中，稍后上滑加载历史' : m.earlier === false && $('cachedMore').hidden ? '已到最早消息' : '继续上滑可加载更早的消息'));
   if (!deferredScrollRender) historyRendering = false;
+  if (!deferredScrollRender && !chatFrame) completeTurnNavigation();
   maybePrefetchOlder();
 }
 const prefetchZone = () => Math.max(600, list.clientHeight * 1.5);
@@ -1034,14 +1182,15 @@ function settleChatScroll() {
   maybePrefetchOlder();
 }
 list.addEventListener('scroll', () => {
+  if (!restoringChatScroll && turnNavUser) showTurnNav();
   if (!restoringChatScroll && !pinnedBottom) stabilizeChatReading();
   settleChatScroll();
 }, { passive: true });
 let historyTouchY = 0;
-list.addEventListener('wheel', e => { if (!readingAnchor) readingAnchor = captureChatAnchor(); restoringChatScroll = false; if (e.deltaY < 0) { historyArmed = true; pinnedBottom = false; } settleChatScroll(); }, { passive: true });
+list.addEventListener('wheel', e => { turnNavGesture(); if (!readingAnchor) readingAnchor = captureChatAnchor(); restoringChatScroll = false; if (e.deltaY < 0) { historyArmed = true; pinnedBottom = false; } settleChatScroll(); }, { passive: true });
 list.addEventListener('pointerdown', () => { historyArmed = true; }, { passive: true });
 list.addEventListener('touchstart', e => { readingAnchor = captureChatAnchor(); historyTouchY = e.touches[0].clientY; chatTouching = true; chatScrolling = true; clearTimeout(scrollIdle); }, { passive: true });
-list.addEventListener('touchmove', e => { restoringChatScroll = false; if (e.touches[0].clientY > historyTouchY) { historyArmed = true; pinnedBottom = false; } historyTouchY = e.touches[0].clientY; }, { passive: true });
+list.addEventListener('touchmove', e => { turnNavGesture(); restoringChatScroll = false; if (e.touches[0].clientY > historyTouchY) { historyArmed = true; pinnedBottom = false; } historyTouchY = e.touches[0].clientY; }, { passive: true });
 for (const event of ['touchend', 'touchcancel']) list.addEventListener(event, () => { chatTouching = false; restoringChatScroll = false; settleChatScroll(); }, { passive: true });
 $('toBottom').onclick = () => { restoreChatPosition(null, true); };
 $('older').onclick = () => loadOlderMessages();
@@ -1293,12 +1442,14 @@ async function openCodexFilePicker(token) {
   let directory = null;
   mentionHide();
   const paint = (note = '') => {
-    const rows = (directory?.entries || []).map((entry, index) => entry.directory
+    const showHidden = store.get('codex-files-show-hidden') === '1';
+    const rows = (directory?.entries || []).map((entry, index) => !showHidden && entry.name.startsWith('.') ? '' : entry.directory
       ? `<button class="opt editorEntry editorFolder" data-cf-dir="${index}">${fileEntryIcon(true)}<span class="lbl">${esc(entry.name)}</span><span class="editorEntryArrow">›</span></button>`
       : `<label class="opt editorEntry"><input type="checkbox" data-cf-file="${index}" ${selected.has(entry.path) ? 'checked' : ''} ${entry.selectable ? '' : 'disabled'}>${fileEntryIcon(false)}<span class="lbl">${esc(entry.name)}</span></label>`).join('');
-    openSheet('codex-files', `<h3>添加电脑端文件</h3><form id="codexFilePathForm" style="display:flex;gap:8px"><button type="button" id="codexFileUp" ${!directory || directory.path === directory.parent ? 'disabled' : ''}>↑ 上一级</button><input id="codexFilePath" aria-label="电脑目录" style="min-width:0;flex:1" value="${esc(directory?.path || '')}" placeholder="输入电脑目录路径"><button>前往</button></form><div class="hint">${esc(note)}</div><div id="codexFileRows" style="max-height:42vh;overflow-y:auto;overscroll-behavior:contain">${rows || '<div class="hint">暂无可显示的文件</div>'}</div><div class="askBtns"><button id="codexFileCancel">取消</button><button id="codexFileAdd" ${selected.size ? '' : 'disabled'}>添加（${selected.size}）</button></div>`);
+    openSheet('codex-files', `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:12px"><h3 style="margin:0;white-space:nowrap">添加电脑端文件</h3><button type="button" id="codexFileHidden" role="switch" aria-checked="${showHidden}" style="display:flex;align-items:center;gap:6px;flex:none;font-size:12px;padding:6px 0;background:transparent"><span>显示隐藏文件</span><span class="switch${showHidden ? ' on' : ''}" aria-hidden="true"></span></button></div><form id="codexFilePathForm" style="display:flex;gap:8px"><button type="button" id="codexFileUp" ${!directory || directory.path === directory.parent ? 'disabled' : ''}>↑ 上一级</button><input id="codexFilePath" aria-label="电脑目录" style="min-width:0;flex:1" value="${esc(directory?.path || '')}" placeholder="输入电脑目录路径"><button>前往</button></form><div class="hint">${esc(note)}</div><div id="codexFileRows" style="max-height:42vh;overflow-y:auto;overscroll-behavior:contain">${rows || '<div class="hint">暂无可显示的文件</div>'}</div><div class="askBtns"><button id="codexFileCancel">取消</button><button id="codexFileAdd" ${selected.size ? '' : 'disabled'}>添加（${selected.size}）</button></div>`);
     $('codexFilePathForm').onsubmit = e => { e.preventDefault(); browse($('codexFilePath').value); };
     $('codexFileUp').onclick = () => browse(directory.parent);
+    $('codexFileHidden').onclick = () => { store.set('codex-files-show-hidden', showHidden ? '0' : '1'); paint(note); };
     $('codexFileRows').onclick = e => {
       const b = e.target.closest('[data-cf-dir]');
       if (b) browse(directory.entries[Number(b.dataset.cfDir)].path);
