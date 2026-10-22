@@ -3,6 +3,11 @@ const text = $('text');
 let questionCompose = null;
 const drafts = new Map(), draftMentions = new Map();
 const inputHistory = new Map(), chatInputCache = new Map(), terminalInputHistory = new Map();
+let inputRecall = null;
+function endInputRecall() {
+  if (inputRecall) inputRecall.history.delete(inputRecall.key);
+  inputRecall = null;
+}
 function chatInputKey(chat = lastChat) { return [currentComputer()?.id || '', viewSel, 'chat', chat?.thread || ''].join('|'); }
 function rememberInputHistory(chat) {
   if (!chat) return;
@@ -72,8 +77,11 @@ function reconcileSent(chat) {
 }
 function draftKey() { return [currentComputer()?.id || '', viewSel, mode, ...(questionCompose?.sel === viewSel && mode === 'chat' ? [questionCompose.id] : [])].join('|'); }
 function saveDraft() { if (activeDraft) { drafts.set(activeDraft, text.value); draftMentions.set(activeDraft, MN.mentions.slice()); } }
-function restoreDraft() { activeDraft = draftKey(); text.value = drafts.get(activeDraft) || ''; MN.mentions = draftMentions.get(activeDraft)?.slice() || []; mentionHide(); autosize(); }
-function autosize() { text.style.height = 'auto'; text.style.height = text.scrollHeight + 'px'; updateMathPrev(); updateComposeCompact(); }
+function restoreDraft() { endInputRecall(); activeDraft = draftKey(); text.value = drafts.get(activeDraft) || ''; MN.mentions = draftMentions.get(activeDraft)?.slice() || []; mentionHide(); autosize(); }
+function autosize() {
+  text.style.height = 'auto'; text.style.height = text.scrollHeight + 'px'; updateMathPrev(); updateComposeCompact();
+  if (questionCompose?.sel === viewSel && document.body.classList.contains('kb')) fitViewport();
+}
 function recallInput(direction) {
   if (mode !== 'chat') return;
   const key = chatInputKey();
@@ -83,22 +91,28 @@ function recallInput(direction) {
     rememberInputHistory(lastChat);
     const rows = (chatInputCache.get(key) || []).map(([, value]) => value);
     if (!rows.length) return status('当前会话暂无已发送内容');
-    state = { rows, index: rows.length, draft: text.value, mentions: MN.mentions.slice() };
+    state = { rows, index: rows.length, draft: text.value, mentions: MN.mentions.slice(), selection: [text.selectionStart, text.selectionEnd, text.selectionDirection] };
     inputHistory.set(key, state);
   }
   state.index = Math.max(0, Math.min(state.rows.length, state.index + direction));
   const atDraft = state.index === state.rows.length;
   text.value = atDraft ? state.draft : state.rows[state.index];
   MN.mentions = atDraft ? state.mentions.slice() : [];
-  text.setSelectionRange(text.value.length, text.value.length);
+  if (atDraft) text.setSelectionRange(...state.selection);
+  else text.setSelectionRange(text.value.length, text.value.length);
+  // The synthetic input saves the recalled text without ending history browsing.
+  inputRecall = null;
   mentionHide(); text.dispatchEvent(new Event('input', { bubbles: true }));
   if (atDraft) inputHistory.delete(key);
+  else inputRecall = { history: inputHistory, key };
 }
 $('inputPrev').onclick = () => recallInput(-1);
 $('inputNext').onclick = () => recallInput(1);
 let draftPushTimer = 0;
 text.addEventListener('input', () => {
+  endInputRecall();
   inputRevision++; draftVersions.set(activeDraft, (draftVersions.get(activeDraft) || 0) + 1); autosize(); saveDraft();
+  syncQuestionDraft(text.value);
   clearTimeout(draftPushTimer);
   draftPushTimer = setTimeout(() => {
     if (questionCompose || composing || mode !== 'chat' || currentApp === 'fusion' || MN.mentions.length) return;
@@ -110,7 +124,7 @@ text.addEventListener('input', () => {
 // sent, the relay types the text and, at each "@label", lets Devin's typeahead insert the chip.
 const MN = { seq: 0, timer: 0, q: null, root: false, mentions: [], used: '' };
 function mentionToken() {
-  if (questionCompose || mode !== 'chat' || (currentApp !== 'devin' && currentApp !== 'codex')) return null;
+  if (questionCompose || mode !== 'chat' || !supportsCapability('fileReferences', currentApp === 'devin' || currentApp === 'codex')) return null;
   const caret = text.selectionStart ?? text.value.length;
   const head = text.value.slice(0, caret);
   if (currentApp === 'codex') {
@@ -137,10 +151,10 @@ function mentionAsk(o) {
 }
 function mentionUpdate() {
   const t = mentionToken();
-  clearTimeout(MN.timer);
   if (!t) return mentionHide();
   const queryKey = (t.trigger || '@') + t.q;
   if (queryKey === MN.q) return;
+  clearTimeout(MN.timer);
   MN.q = queryKey;
   if (currentApp === 'codex') MN.seq++;
   MN.timer = setTimeout(() => mentionAsk({ q: t.q }), currentApp === 'codex' ? 150 : 220);
@@ -184,8 +198,7 @@ $('mentionBox').addEventListener('click', e => {
   if (!r || (!t && !MN.parent)) return;
   if (MN.root) return mentionAsk({ cat: r.label });
   if (currentApp === 'codex' && (r.key === 'context-action:pick-local-files' || (r.section === 'context-actions' && r.label === 'Files and folders'))) {
-    status('继续输入文件名，从列表里选择');
-    return;
+    return openCodexFilePicker(t);
   }
   const command = currentApp === 'codex' && (MN.parent || r.section === 'commands' || r.section === 'context-actions' || r.section === 'plugins' || r.section === 'apps');
   if (command) {
@@ -230,7 +243,7 @@ text.addEventListener('blur', () => {
 });
 // Devin while its turn runs: Queue (default, Enter) or Send now (interrupts the turn, after confirmation).
 let chatBusy = false;
-function devinBusySplit() { return mode === 'chat' && currentApp === 'devin' && chatBusy; }
+function devinBusySplit() { return mode === 'chat' && currentApp === 'devin' && supportsCapability('queue') && supportsCapability('steer') && chatBusy; }
 function codexFollow() {
   const follow = lastChat?.codex?.follow;
   return mode === 'chat' && currentApp === 'codex' && chatBusy && (follow === 'queue' || follow === 'steer') ? follow : '';
@@ -263,13 +276,10 @@ function micHeld() { return $('mic')?.classList.contains('on') || (typeof voiceS
 // Only where vertical room is scarce, judged by the window's actual shape rather than the reported
 // orientation (foldables disagree on what "portrait" means): a tall phone window keeps the full composer,
 // while foldable cover screens (~1.3–1.5 tall:wide), landscape phones, tablets and unfolded inners collapse.
-const composeCompactAllowed = () => iphoneDuo
-  ? $('listWrap').clientHeight + document.querySelector('footer').offsetHeight < 600
-  : window.innerHeight / window.innerWidth < 1.6;
+const composeCompactAllowed = () => window.innerHeight / window.innerWidth < 1.6;
 window.addEventListener('resize', () => updateComposeCompact());
 function composeCompactWanted() {
   return mode === 'chat' && composeCompactAllowed()
-    && (!iphoneDuo || (!questionCompose && !document.body.classList.contains('kb') && !$('msg').classList.contains('err')))
     && !text.value.trim() && document.activeElement !== text && !composerEngaged
     && !$('attachments').children.length
     && $('mentionBox').hidden
@@ -389,7 +399,7 @@ $('insertNewline').onclick = () => {
 // beforeinput's line-break event often has no shiftKey, so remember it from keydown.
 let composing = false;
 let shiftEnter = false;
-text.addEventListener('compositionstart', () => { composing = true; });
+text.addEventListener('compositionstart', () => { endInputRecall(); composing = true; });
 text.addEventListener('compositionend', () => { setTimeout(() => { composing = false; }, 0); });
 function submitOnEnter(e) {
   if (shiftEnter || e.shiftKey || e.isComposing || composing) return;
@@ -397,10 +407,22 @@ function submitOnEnter(e) {
   $('send').click();
 }
 text.addEventListener('keydown', e => {
+  if (['ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(e.key)) endInputRecall();
+  if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+    if (!e.altKey || e.isComposing || composing || e.keyCode === 229 || !$('mentionBox').hidden) return;
+    if (e.ctrlKey || e.metaKey || e.shiftKey || text.selectionStart !== text.selectionEnd) return endInputRecall();
+    if (mode !== 'chat' && mode !== 'terminal') return;
+    e.preventDefault();
+    const direction = e.key === 'ArrowUp' ? -1 : 1;
+    if (mode === 'chat') recallInput(direction);
+    else send({ t: 'termHistory', direction });
+    return;
+  }
   if (e.key !== 'Enter') return;
   shiftEnter = e.shiftKey;
   submitOnEnter(e);
 });
+text.addEventListener('pointerdown', endInputRecall, { passive: true });
 text.addEventListener('keyup', e => { if (e.key === 'Enter') shiftEnter = false; });
 text.addEventListener('beforeinput', e => {
   if (e.inputType === 'insertLineBreak' || e.inputType === 'insertParagraph') submitOnEnter(e);
@@ -416,14 +438,17 @@ function recallTerminal(m) {
   if (!state) {
     if (m.direction > 0) return;
     if (!m.commands.length) return status('当前终端暂无可读取的命令历史');
-    state = { rows: m.commands, index: m.commands.length, draft: text.value };
+    state = { rows: m.commands, index: m.commands.length, draft: text.value, selection: [text.selectionStart, text.selectionEnd, text.selectionDirection] };
     terminalInputHistory.set(key, state);
   }
   state.index = Math.max(0, Math.min(state.rows.length, state.index + m.direction));
   const atDraft = state.index === state.rows.length;
   text.value = atDraft ? state.draft : state.rows[state.index];
-  text.setSelectionRange(text.value.length, text.value.length); autosize(); saveDraft();
+  if (atDraft) text.setSelectionRange(...state.selection);
+  else text.setSelectionRange(text.value.length, text.value.length);
+  autosize(); saveDraft();
   if (atDraft) terminalInputHistory.delete(key);
+  inputRecall = atDraft ? null : { history: terminalInputHistory, key };
 }
 document.querySelectorAll('[data-termkey]').forEach(b => b.onclick = () => {
   const direction = b.dataset.termkey === 'ArrowUp' ? -1 : b.dataset.termkey === 'ArrowDown' ? 1 : 0;
