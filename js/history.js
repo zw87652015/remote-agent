@@ -1,11 +1,21 @@
 // ---- local per-session history (Devin) ----
 // The relay only remembers what it has seen since it started (and caps it), so the phone keeps its own copy of
 // every row of every session: merged by item id, stored in IndexedDB, dropped only when the user clears it.
-const SC = { key: null, items: new Map(), sig: new Map(), collapsed: new Set(), show: 400, dirty: false, timer: 0 };
+const SC = { key: null, items: new Map(), sig: new Map(), collapsed: new Set(), show: 400, dirty: false, timer: 0, cleared: false };
 const SC_MAX = 8000;
 const acpNum = id => { const m = /^acp(\d+)/.exec(id || ''); return m ? Number(m[1]) : -1; };
 let scDbP = null;
 const scPending = new Map(), scItemBytes = new WeakMap();
+const scWriting = new Set(), scClears = new Set(), scVersions = new Map();
+let scGeneration = 0;
+const scVersion = key => `${scGeneration}:${scVersions.get(key) || 0}`;
+const scClearing = key => [...scClears].some(clear => clear.key == null || clear.key === key);
+function scTrackWrite(key, work) {
+  const write = { key };
+  write.promise = Promise.resolve(work).finally(() => scWriting.delete(write));
+  scWriting.add(write);
+  return write.promise;
+}
 let scSaveFrame = 0;
 function scDb() {
   if (!scDbP) scDbP = new Promise((res, rej) => {
@@ -23,34 +33,53 @@ const scReq = (mode, fn) => scDb().then(db => new Promise((res, rej) => {
   rq.onerror = () => rej(rq.error);
 })).catch(() => null);
 const idbGet = k => scReq('readonly', s => s.get(k));
-const idbPut = (k, v) => scReq('readwrite', s => s.put(v, k));
+const idbPut = (k, v) => scTrackWrite(k, scReq('readwrite', s => s.put(v, k)));
 const chatCacheKey = sel => `${currentComputer()?.id || ''}|${sel}`;
+const chatPreviewGeneration = scGeneration, chatPreviewVersions = new Map(scVersions);
 const chatPreviewReady = idbGet('chat-previews').then(entries => {
-  for (const [key, chat] of entries || []) if (!chatBySel.has(key)) lruPut(chatBySel, key, chat, 12);
+  let filtered = false;
+  for (const [key, chat] of entries || []) {
+    if (scGeneration !== chatPreviewGeneration || (scVersions.get(key) || 0) !== (chatPreviewVersions.get(key) || 0) || scClearing(key)) { filtered = true; continue; }
+    if (!chatBySel.has(key)) lruPut(chatBySel, key, chat, 12);
+  }
+  if (filtered && chatBySel.size) saveChatPreview();
 });
 let chatPreviewTimer = 0;
+function chatTail(items, limit) {
+  const start = Math.max(0, items.length - limit);
+  const head = items.slice(0, start).findLast(it => it.k === 'human');
+  return [...(head ? [head] : []), ...items.slice(start)];
+}
 function cacheChat(sel, chat) {
-  lruPut(chatBySel, chatCacheKey(sel), chat, 12);
+  const key = chatCacheKey(sel);
+  lruPut(chatBySel, key, chat, 12);
+  if (key === SC.key) SC.cleared = false;
+  saveChatPreview();
+}
+function saveChatPreview() {
   if (!chatPreviewTimer) chatPreviewTimer = setTimeout(function savePreview() {
-    if (chatScrolling || chatTouching) { chatPreviewTimer = setTimeout(savePreview, 250); return; }
+    if (scClears.size || chatScrolling || chatTouching) { chatPreviewTimer = setTimeout(savePreview, 250); return; }
     chatPreviewTimer = 0;
-    idbPut('chat-previews', [...chatBySel].map(([key, value]) => [key, { ...value, items: value.items.slice(-400) }]));
+    idbPut('chat-previews', [...chatBySel].map(([key, value]) => {
+      const items = chatTail(value.items, 400);
+      return [key, { ...value, items, earlier: items.length < value.items.length || value.earlier }];
+    }));
   }, 1000);
 }
-let chatFrame = 0, queuedChat = null;
+let chatFrame = 0, queuedChat = null, chatRenderEpoch = 0;
+function invalidateChatRender() {
+  chatRenderEpoch++;
+  queuedChat = null;
+  if (chatFrame) { cancelAnimationFrame(chatFrame); chatFrame = 0; }
+}
 function queueChatRender(chat = queuedChat?.chat || lastChat, stale = queuedChat?.stale ?? chatStale, sel = queuedChat?.sel || viewSel) {
-  queuedChat = {chat, stale, sel};
+  queuedChat = { chat, stale, sel, epoch: chatRenderEpoch };
   if (!chatFrame) chatFrame = requestAnimationFrame(() => {
     chatFrame = 0;
     const next = queuedChat;
     queuedChat = null;
-    if (windowReady && (!next.sel || !viewSel || next.sel === viewSel)) {
+    if (next?.epoch === chatRenderEpoch && windowReady && (!next.sel || !viewSel || next.sel === viewSel)) {
       renderChat(next.chat, next.stale);
-      if (next.chat && (!next.stale || next.chat.imagePreview) && !deferredScrollRender
-          && windowReady && (!next.sel || next.sel === viewSel)) {
-        if (!next.chat.readonly) rememberConversation();
-        connContentReady();
-      }
     }
   });
 }
@@ -71,12 +100,13 @@ function scSetTitle(key, title) {
   if (ks.length > 500) delete scTitles[ks[0]];
   store.set('scTitles', JSON.stringify(scTitles));
 }
-const scGet = k => {
+const scGet = async k => {
+  const key = k.slice(2), version = scVersion(key);
   const pending = k.startsWith('h:') && scPending.get(k.slice(2));
-  if (pending) return Promise.resolve(scSnapshot(pending));
   const n = nativeHist();
-  if (!n) return idbGet(k);
-  return Promise.resolve(parseJson(k.startsWith('h:') ? n.histGet(k.slice(2)) : n.histMeta(k.slice(2))));
+  const value = pending ? scSnapshot(pending) : scClearing(key) ? null
+    : !n ? await idbGet(k) : parseJson(k.startsWith('h:') ? n.histGet(key) : n.histMeta(key));
+  return version === scVersion(key) ? value : null;
 };
 const scDel = k => {
   const n = nativeHist();
@@ -97,7 +127,7 @@ function scSave(key, items, collapsed) {
   const updated = Date.now();
   if (n) {
     const json = JSON.stringify({ items, collapsed });
-    return n.histPut(key, json, JSON.stringify({ n: items.length, bytes: json.length, updated }), JSON.stringify(scIndex(items)));
+    return scTrackWrite('h:' + key, n.histPut(key, json, JSON.stringify({ n: items.length, bytes: json.length, updated }), JSON.stringify(scIndex(items))));
   }
   const bytes = JSON.stringify({ items: [], collapsed }).length + Math.max(0, items.length - 1) + items.reduce((sum, it) => {
     let size = scItemBytes.get(it);
@@ -111,8 +141,8 @@ async function scMigrate() {
   const n = nativeHist();
   if (!n || store.get('histMig1')) return;
   for (const mk of (await idbKeys() || []).map(String).filter(k => k.startsWith('m:'))) {
-    const key = mk.slice(2), h = await idbGet('h:' + key);
-    if (h?.items && !n.histGet(key)) scSave(key, h.items, h.collapsed || []);
+    const key = mk.slice(2), version = scVersion(key), h = await idbGet('h:' + key);
+    if (version === scVersion(key) && !scClearing(key) && h?.items && !n.histGet(key)) await scSave(key, h.items, h.collapsed || []);
   }
   store.set('histMig1', 1);
 }
@@ -143,6 +173,7 @@ function scDrain(force = false) {
   }
   const saves = [];
   for (const [key, pending] of scPending) {
+    if (scClearing(key)) continue;
     if (pending.saving) { saves.push(pending.saving); continue; }
     const { items, collapsed } = scSnapshot(pending);
     pending.saving = Promise.resolve(scSave(key, items, collapsed)).then(() => {
@@ -172,17 +203,17 @@ addEventListener('pagehide', () => { scFlush(); scDrain(true); });
 function scSwitch(sess) {
   scFlush();
   SC.key = sess ? scKeyFor(sess) : null;
-  SC.items = new Map(); SC.sig = new Map(); SC.collapsed = new Set(); SC.show = 400;
-  const k = SC.key;
+  SC.items = new Map(); SC.sig = new Map(); SC.collapsed = new Set(); SC.show = 400; SC.cleared = false;
+  const k = SC.key, version = scVersion(k);
   if (!k) return;
   scGet('h:' + k).then(v => {
-    if (SC.key !== k || !v || lastChat?.empty) return;
+    if (SC.key !== k || version !== scVersion(k) || !v || lastChat?.empty) return;
     for (const it of v.items || []) {
       const cur = SC.items.get(it.i);
       SC.items.set(it.i, cur ? scKeep(it, cur) : it);
     }
     for (const c of v.collapsed || []) SC.collapsed.add(c);
-    if (lastChat) renderChat(lastChat);
+    if (lastChat) renderChat(lastChat, chatStale);
   });
 }
 // Merge what the relay sent into the stored session and return what to draw: all rows (older ones windowed
@@ -193,7 +224,7 @@ function scMerge(chat) {
     SC.items.clear(); SC.sig.clear(); SC.collapsed.clear(); scDirty();
   }
   let changed = false;
-  for (const it of chat.items) {
+  for (const it of SC.cleared ? [] : chat.items) {
     const sig = JSON.stringify(it);
     if (SC.sig.get(it.i) === sig && SC.items.has(it.i)) continue;
     scItemBytes.set(it, sig.length);
@@ -202,7 +233,7 @@ function scMerge(chat) {
     changed = true;
   }
   if (changed) scDirty();
-  const all = [...SC.items.values()].sort((a, b) => (a.order ?? acpNum(a.i)) - (b.order ?? acpNum(b.i)));
+  const all = [...(SC.cleared ? chat.items : SC.items.values())].sort((a, b) => (a.order ?? acpNum(a.i)) - (b.order ?? acpNum(b.i)));
   const stat = new Map(), turnOf = new Map();
   let turn = null;
   for (const it of all) {
@@ -212,17 +243,17 @@ function scMerge(chat) {
   }
   let items = all.filter(it => it.k === 'human' || !SC.collapsed.has(turnOf.get(it.i)));
   let older = 0;
-  if (items.length > SC.show) { older = items.length - SC.show; items = items.slice(-SC.show); }
+  if (items.length > SC.show) { const tail = chatTail(items, SC.show); older = items.length - tail.length; items = tail; }
   return { items, all, older, stat, turnOf };
 }
 function scFold(turn, to) {
   if (!SC.key) return;
   const want = to ?? !SC.collapsed.has(turn);
   if (turn === '*') {
-    SC.collapsed = new Set(want ? [...SC.items.values()].filter(it => it.k === 'human').map(it => it.i) : []);
+    SC.collapsed = new Set(want ? [...(SC.cleared ? lastChat?.items || [] : SC.items.values())].filter(it => it.k === 'human').map(it => it.i) : []);
   } else if (want) SC.collapsed.add(turn); else SC.collapsed.delete(turn);
   scDirty();
-  if (lastChat) renderChat(lastChat);
+  if (lastChat) renderChat(lastChat, chatStale, false, false);
 }
 // The desktop rewound the session (revert): rows from `from` on no longer exist, here or on the computer.
 function scTrunc(from) {
@@ -259,12 +290,34 @@ function scSearch(q) {
   }).join('') : '<div class="hint">没有找到。</div>';
 }
 async function scClear(key) {
-  scPending.delete(key);
-  await scDel('h:' + key);
-  await scDel('m:' + key);
-  if (key === SC.key) {
-    SC.items = new Map(); SC.sig = new Map(); SC.collapsed = new Set(); SC.dirty = false;
-    if (lastChat) renderChat(lastChat);
+  const clear = { key }, matches = value => key == null || value === key;
+  scClears.add(clear);
+  if (key == null) scGeneration++;
+  else scVersions.set(key, (scVersions.get(key) || 0) + 1);
+  clearTimeout(scDrainTimer); scDrainTimer = 0;
+  if (scSaveFrame) { cancelAnimationFrame(scSaveFrame); scSaveFrame = 0; }
+  clearTimeout(chatPreviewTimer); chatPreviewTimer = 0;
+  for (const pending of scPending.keys()) if (matches(pending)) scPending.delete(pending);
+  for (const cached of chatBySel.keys()) if (matches(cached)) chatBySel.delete(cached);
+  for (const title of Object.keys(scTitles)) if (matches(title)) delete scTitles[title];
+  store.set('scTitles', JSON.stringify(scTitles));
+  if (matches(SC.key)) {
+    clearTimeout(SC.timer); SC.timer = 0;
+    SC.items = new Map(); SC.sig = new Map(); SC.collapsed = new Set(); SC.dirty = false; SC.cleared = true;
+  }
+  try {
+    await Promise.all([...scWriting].filter(write => write.key === 'chat-previews' || matches(write.key.slice(2))).map(write => write.promise));
+    const keys = key == null ? [...new Set([...(await scKeys() || []), ...(await idbKeys() || [])]
+      .map(String).filter(k => k.startsWith('h:') || k.startsWith('m:')).map(k => k.slice(2)))] : [key];
+    for (const session of keys) {
+      await scDel('h:' + session); await scDel('m:' + session);
+      if (nativeHist()) { await idbDel('h:' + session); await idbDel('m:' + session); }
+    }
+    await idbDel('chat-previews');
+  } finally {
+    scClears.delete(clear);
+    if (chatBySel.size) saveChatPreview();
+    scFlush(); scDrain();
   }
 }
 function showBgSheet() {
@@ -318,61 +371,154 @@ function userSelecting() {
   return !!sel && !sel.isCollapsed && sel.rangeCount > 0 && itemsEl.contains(sel.getRangeAt(0).commonAncestorContainer);
 }
 let deferredRender = false;
-let chatScrolling = false, chatTouching = false, scrollIdle = 0, deferredScrollRender = false, lastScrollTop = 0;
+let chatScrolling = false, chatTouching = false, chatMomentum = false, scrollIdle = 0, deferredScrollRender = false, lastScrollTop = 0;
+let chatUserScroll = false, chatMotionFrame = 0, chatMotionOverflow = '';
+let scrollMode = 'freeScroll', scrollCorrection = null, scrollFrame = 0, historyPagePending = null;
+let bottomScrollIntent = null, initialBottomSelection = null;
+const readingExecutionRows = new Set();
 let historyRequest = null, historyRendering = false, historyExpanded = false, historyArmed = false, historySerial = 0, historyAtEnd = false;
+let historyCursor = null;
+let historyWaitingForIdle = false;
 let pendingHistoryStatus = null;
 let turnNavTimer = 0, turnNavHeld = false, turnNavUser = false, turnNavCursor = null, turnNavPending = null;
 let turnNavPointer = null, turnNavSkipClick = false;
-let restoringChatScroll = false, readingAnchor = null;
-function captureChatAnchor() {
-  const top = list.getBoundingClientRect().top;
-  let lo = 0, hi = itemsEl.children.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1;
-    if (itemsEl.children[mid].getBoundingClientRect().bottom > top) hi = mid;
-    else lo = mid + 1;
-  }
-  const el = itemsEl.children[lo];
-  return el ? { el, id: el.dataset.i, top: el.getBoundingClientRect().top - top, scrollTop: list.scrollTop } : null;
+let restoringChatScroll = false;
+let layoutDirty = false, syncScrollFlush = false, suppressHistoryArm = false;
+function isFollowingBottom() { return scrollMode === 'followBottom'; }
+function noteChatLayoutChange() {
+  if (isFollowingBottom()) requestChatScroll();
 }
-let pinnedBottom = false;
-function stabilizeChatReading() {
-  if (readingAnchor) {
-    const el = readingAnchor.el;
-    if (el) {
-      const top = list.scrollTop;
-      // Keep the user's scroll delta; compensate only for layout changes above the anchor.
-      const shift = el.getBoundingClientRect().top - list.getBoundingClientRect().top - readingAnchor.top + top - readingAnchor.scrollTop;
-      if (shift) {
-        list.scrollTop += shift;
-        lastScrollTop += list.scrollTop - top;
-      }
-    }
-  }
-  readingAnchor = captureChatAnchor();
+function beginChatSelection() {
+  cancelChatMotion();
+  resetTurnNav();
+  clearTimeout(scrollIdle);
+  chatTouching = chatMomentum = chatScrolling = chatUserScroll = false;
+  deferredScrollRender = deferredRender = false;
+  scrollCorrection = null; historyPagePending = null;
+  bottomScrollIntent = null;
+  readingExecutionRows.clear();
+  initialBottomSelection = viewSel || null;
+  setScrollMode('freeScroll');
 }
-function restoreChatPosition(anchor, stick = false) {
+function noteBottomScrollIntent(towardBottom) {
+  initialBottomSelection = null;
+  if (isFollowingBottom() && atBottom()) return;
+  setScrollMode('freeScroll');
+  if (towardBottom) bottomScrollIntent = { sel: viewSel, top: chatScrollTop(), max: maxChatScrollTop() };
+}
+function userReachedBottom() {
+  const intent = bottomScrollIntent;
+  if (!intent) return false;
+  if (intent.sel !== viewSel || intent.max !== maxChatScrollTop()) { bottomScrollIntent = null; return false; }
+  return chatScrollTop() >= intent.top - BOTTOM_EPSILON && atBottom();
+}
+function setScrollMode(next) {
+  if (next === 'followBottom' && !atBottom()) return;
+  scrollMode = next;
+  if (next === 'followBottom') {
+    bottomScrollIntent = null;
+    if (readingExecutionRows.size) { readingExecutionRows.clear(); deferredScrollRender = true; }
+    historyArmed = false;
+    scrollCorrection = null;
+  }
+  else {
+    scrollCorrection = null;
+  }
+}
+function maxChatScrollTop() { return Math.max(0, list.scrollHeight - list.clientHeight); }
+// Safari's bounce can report positions outside the actual scrollable range.
+function chatScrollTop() { return Math.max(0, Math.min(maxChatScrollTop(), list.scrollTop)); }
+function cancelChatMotion() {
+  if (!chatMotionFrame) return;
+  cancelAnimationFrame(chatMotionFrame);
+  chatMotionFrame = 0;
+  list.style.overflowY = chatMotionOverflow;
+  if (scrollMode === 'programmatic') setScrollMode('freeScroll');
+}
+function stopChatMotion(jump) {
+  initialBottomSelection = null;
+  bottomScrollIntent = null;
+  if (readingExecutionRows.size) { readingExecutionRows.clear(); deferredScrollRender = true; }
+  if (chatMotionFrame) cancelAnimationFrame(chatMotionFrame);
+  else chatMotionOverflow = list.style.overflowY;
+  // Keep the native scroller disabled for one paint, so its inertia cannot undo an explicit jump.
+  list.style.overflowY = 'hidden';
+  void list.offsetHeight;
+  chatMotionFrame = requestAnimationFrame(() => {
+    chatMotionFrame = requestAnimationFrame(() => {
+      if (jump) jump();
+      chatMotionFrame = requestAnimationFrame(() => {
+        list.style.overflowY = chatMotionOverflow;
+        chatMotionFrame = 0;
+      });
+    });
+  });
+  clearTimeout(scrollIdle);
+  if (scrollFrame) { cancelAnimationFrame(scrollFrame); scrollFrame = 0; }
+  chatTouching = chatMomentum = chatScrolling = chatUserScroll = false;
+  scrollCorrection = null; historyPagePending = null;
+  historyArmed = historyPullUp = historyWheelPullUp = historyWaitingForIdle = false;
+  turnNavPending = null;
+  layoutDirty = false;
+  setScrollMode('programmatic');
+}
+function setChatScrollTop(next) {
+  next = Math.max(0, Math.min(maxChatScrollTop(), next));
+  if (Math.abs(list.scrollTop - next) < 1) return false;
+  bottomScrollIntent = null;
   restoringChatScroll = true;
-  pinnedBottom = !!stick;
-  if (stick) list.scrollTop = list.scrollHeight;
-  else if (anchor) {
-    const el = [...itemsEl.children].find(e => e.dataset.i === anchor.id);
-    if (el) list.scrollTop += el.getBoundingClientRect().top - list.getBoundingClientRect().top - anchor.top;
+  list.scrollTop = next;
+  requestAnimationFrame(() => { restoringChatScroll = false; updateToBottom(); });
+  return true;
+}
+function applyChatScrollCorrection() {
+  const correction = scrollCorrection;
+  scrollCorrection = null;
+  if (chatTouching || chatMomentum || chatScrolling || turnNavPointer?.dragging) {
+    if (correction) scrollCorrection = correction;
+    layoutDirty = true;
+    return false;
   }
-  readingAnchor = stick ? null : captureChatAnchor();
-  requestAnimationFrame(() => { restoringChatScroll = false; });
+  if (scrollMode === 'followBottom') {
+    setChatScrollTop(maxChatScrollTop());
+  }
+  layoutDirty = false;
+  updateTurnNav();
+  return true;
+}
+function reconcileChatScroll(sync = false) {
+  if (sync) {
+    if (scrollFrame) { cancelAnimationFrame(scrollFrame); scrollFrame = 0; }
+    applyChatScrollCorrection();
+    return;
+  }
+  if (scrollFrame) return;
+  scrollFrame = requestAnimationFrame(() => {
+    scrollFrame = 0;
+    applyChatScrollCorrection();
+  });
+}
+function requestChatScroll() {
+  if (!isFollowingBottom()) return;
+  scrollCorrection = { kind: 'bottom' };
+  reconcileChatScroll();
+}
+function restoreChatPosition(stick = false) {
+  if (scrollMode === 'programmatic') return;
+  if (stick && isFollowingBottom()) requestChatScroll();
 }
 const chatSizeObserver = new ResizeObserver(() => {
-  if (chatScrolling || chatTouching) { stabilizeChatReading(); return; }
-  if (pinnedBottom) {
-    restoringChatScroll = true;
-    list.scrollTop = list.scrollHeight;
-    requestAnimationFrame(() => { restoringChatScroll = false; });
-  } else if (readingAnchor) restoreChatPosition(readingAnchor);
+  if (chatTouching || chatMomentum || chatScrolling || turnNavPointer?.dragging || syncScrollFlush) {
+    layoutDirty = true;
+    return;
+  }
+  if (isFollowingBottom()) { requestChatScroll(); return; }
+  layoutDirty = false;
 });
 for (const el of [itemsEl, $('older'), $('historyStatus'), $('cachedMore')]) chatSizeObserver.observe(el);
 document.addEventListener('selectionchange', () => {
-  if (deferredRender && !userSelecting()) { deferredRender = false; if (lastChat) renderChat(lastChat); }
+  if (deferredRender && !userSelecting()) { deferredRender = false; if (lastChat) renderChat(lastChat, chatStale); }
+  applyPendingHistory();
 });
 function syncChildren(parent, els) {
   const keep = new Set(els);
@@ -416,21 +562,32 @@ function showWorkdirs(m) {
 function pruneEchoes(chat) {
   if (!pendingEchoes.length) return;
   const humans = (chat?.items || []).filter(it => it.k === 'human');
-  const queued = (chat?.queued || []).map(q => (q.t || '').trim());
-  const queuedCount = Math.max(queued.length, chat?.queuedCount || 0);
+  const queued = chat?.queued || [];
+  const claimedQueue = new Set();
   pendingEchoes = pendingEchoes.filter(p => {
     // A send that vanished with a dead socket would otherwise spin "发送中…" forever.
-    if (Date.now() - p.at > (p.confirmed ? 60000 : 120000)) return false;
+    if (!p.confirmed && Date.now() - p.at > 120000) return false;
     if (p.sel !== viewSel) return true;
-    const matches = humans.filter(it => echoTextMatches(it, p.text)).length;
-    if (matches > p.before) return false;
-    // Once the send is acknowledged, a human item stamped after the click is enough: the extracted
-    // text can differ from the typed text (mentions, attachments), which would leave the echo forever.
-    if (p.confirmed && humans.some(it => it.sentAt && it.sentAt >= p.at - 2000)) return false;
-    if (p.kind === 'queue' && queued.some(t => echoTextMatches({ t }, p.text))) return false;
-    // Queue row text is rendered (markdown, collapsed whitespace) and may never equal the
-    // typed text; once confirmed, any non-empty queue already contains the echo.
-    if (p.kind === 'queue' && p.confirmed && queuedCount > 0) return false;
+    if (p.messageId && humans.some(it => it.i === p.messageId)) return false;
+    p.represented = false;
+    if (p.kind === 'queue' || p.queueId) {
+      const index = p.confirmed ? queued.findIndex((q, n) => !claimedQueue.has(n) && (p.queueId && currentApp !== 'devin' ? q.id === p.queueId : echoTextMatches(q, p.text))) : -1;
+      if (index >= 0) {
+        claimedQueue.add(index);
+        p.queueId = queued[index].id;
+        p.kind = 'queue';
+        if (queued[index].t) {
+          p.text = queued[index].t;
+          const receipt = submittedMessages.find(row => row.requestId === p.requestId);
+          if (receipt) receipt.text = p.text;
+        }
+        p.represented = true;
+        p.syncing = false;
+      } else if (p.confirmed) {
+        p.syncing = true;
+        if (p.queueId) p.kind = 'chat';
+      }
+    }
     return true;
   });
 }
@@ -438,7 +595,7 @@ function pendingEchoEls() {
   return pendingEchoes.filter(p => p.kind === 'chat' && p.sel === viewSel).map(p => {
     const el = document.createElement('div');
     el.className = 'msg human pending';
-    el.innerHTML = `<div class="humanContent"><div class="bubble">${esc(p.text)}</div><div class="messageMeta">${I18N.tr(p.confirmed ? '已发送' : '发送中…')}</div></div>`;
+    el.innerHTML = `<div class="humanContent"><div class="bubble">${esc(p.text)}</div><div class="messageMeta">${I18N.tr(p.syncing ? '正在同步…' : p.confirmed ? '已发送' : '发送中…')}</div></div>`;
     return el;
   });
 }
@@ -447,10 +604,11 @@ function executionRecord(it) {
   return it.k === 'tool' && (it.execution || ['command', 'read', 'search', 'explore'].includes(it.kind)
     || String(it.i).includes(':exec:'));
 }
-function visibleChatItems(items, busy) {
+function visibleChatItems(items, busy, retained = new Set()) {
   const shown = executionRecordsShown();
   const latestTurn = busy ? Math.max(0, items.findLastIndex(it => it.k === 'human')) : items.length;
   return items.filter((it, n) => {
+    if (it.k === 'tool' && retained.has(String(it.i))) return true;
     if (!executionRecord(it)) return !(it.k === 'tool' && it.done);
     const attention = it.keep || it.b?.some(b => /^(?:run(?! in background)|allow|approve|reject|deny|retry|confirm|continue|accept)\b|^(?:运行|允许|批准|拒绝|重试|确认|继续|接受)/i.test(b))
       || /(?:^|\n)\s*(?:error\b|failed\b|permission denied\b|(?:(?:process|command) )?exit(?:ed)?(?: with)? code[: ]+[1-9]\d*|错误|失败|拒绝)/i.test([it.t, it.output].filter(Boolean).join('\n'));
@@ -459,12 +617,13 @@ function visibleChatItems(items, busy) {
 }
 function toggleExecutionRecords() {
   store.set('show-execution-' + currentApp, executionRecordsShown() ? '0' : '1');
-  renderChat(lastChat, chatStale);
+  renderChat(lastChat, chatStale, false, false);
   showMainMenu();
 }
-function renderChat(chat, stale, loading = false) {
+function renderChat(chat, stale, loading = false, keepReading = true) {
   if (chat) reconcileSent(chat);
   chat = withMessageTimes(chat);
+  rememberChatMessageTime(chat);
   pruneEchoes(chat);
   updateGenerationTime(chat, stale);
   chatStale = !!stale;
@@ -475,13 +634,15 @@ function renderChat(chat, stale, loading = false) {
     menuCache.delete(menuCacheKey('model'));
     menuCache.delete(menuCacheKey('effort'));
   }
-  if (!chat || previous?.thread !== chat.thread) {
-    resetTurnNav();
-    historyRequest = null; historyRendering = false; historyExpanded = false; historyArmed = false; historyAtEnd = false; readingAnchor = null; pendingHistoryStatus = null;
+  const threadChanged = !chat || previous?.thread !== chat.thread;
+  if (threadChanged) {
+    historyCursor = null;
+    readingExecutionRows.clear();
+    historyRequest = null; historyRendering = false; historyExpanded = false; historyArmed = false; historyAtEnd = false; historyWaitingForIdle = false; chatUserScroll = false; bottomScrollIntent = null; scrollCorrection = null; historyPagePending = null; layoutDirty = false; syncScrollFlush = false; pendingHistoryStatus = null;
     $('older').disabled = false;
     $('historyStatus').hidden = true;
   }
-  if (currentApp === 'codex' && chat?.earlier === true) historyAtEnd = false;
+  if (chat?.earlier === true && (currentApp !== 'codex' || !historyExpanded)) historyAtEnd = false;
   if (chat && previous?.thread === chat.thread && historyExpanded && currentApp !== 'devin') {
     const rows = historyRequest ? [...chat.items, ...previous.items] : [...previous.items, ...chat.items];
     const updates = new Map(chat.items.map(it => [it.i, it]));
@@ -489,7 +650,7 @@ function renderChat(chat, stale, loading = false) {
     if (merged.every(it => Number.isFinite(it.order))) merged.sort((a, b) => a.order - b.order);
     chat = { ...chat, items: merged };
   }
-  if (chatScrolling && chat && previous?.thread === chat.thread) {
+  if ((chatTouching || chatMomentum || chatScrolling || turnNavPointer?.dragging) && chat && previous?.thread === chat.thread) {
     lastChat = chat;
     paintGenerationTime();
     deferredScrollRender = true;
@@ -498,8 +659,8 @@ function renderChat(chat, stale, loading = false) {
     renderQuestions(chat.readonly && !chat.questions?.codex ? null : chat.questions);
     return;
   }
-  const followBottom = !historyRequest && !historyRendering && followingChat();
-  const savedAnchor = followBottom ? null : captureChatAnchor();
+  const followBottom = followingChat();
+  noteChatLayoutChange();
   lastChat = chat; updateTitle();
   paintGenerationTime();
   paintWorkdir(chat?.workdir);
@@ -510,7 +671,7 @@ function renderChat(chat, stale, loading = false) {
   $('emptyHint').hidden = loading || imageOnly || !!chat?.loginRequired;
   $('older').hidden = !chat || chat.earlier === false;
   $('pickMode').hidden = currentApp === 'devin' || currentApp === 'cursor' || !chat?.mode;
-  $('pickModel').hidden = !supportsCapability('model');
+  $('pickModel').hidden = !supportsCapability('model') || (currentApp === 'codex' && (chatStale || !chat?.model));
   if (chat?.mode) { $('pickMode').textContent = chat.mode === 'Bypass Permissions' ? '⚠绕过' : chat.mode; $('pickMode').title = chat.mode; }
   $('pickMode').classList.toggle('bypass', chat?.mode === 'Bypass Permissions');
   const mdl = chat?.model || '模型';
@@ -549,6 +710,7 @@ function renderChat(chat, stale, loading = false) {
   if (!sessionChanged && userSelecting()) {
     deferredRender = true;
     $('actionBar').innerHTML = buttonsHtml(chat.global, 'g');
+    if (chat.global?.length) maybeAutoRetry({ i: 'global', btnItem: 'g', b: chat.global });
     $('actionBar').classList.toggle('show', chat.global.length > 0);
     renderQueue(chat.busy, chat.queued || [], chat.subagents || [], chat.readonly, chat.changed, chat.queuedCount);
     renderQuestions(chat.readonly && !chat.questions?.codex ? null : chat.questions);
@@ -559,29 +721,13 @@ function renderChat(chat, stale, loading = false) {
   $('older').hidden ||= historyAtEnd;
   $('cachedMore').hidden = !V.older;
   $('cachedMore').textContent = `↑ 显示更早的本地记录（${V.older} 条）`;
-  const stick = followBottom || sessionChanged;
-  const visibleItems = visibleChatItems(V.items, chat.busy);
-  // Anchor on the first visible item so loading older messages doesn't jump.
-  let anchor = savedAnchor;
-  if (anchor && !visibleItems.some(it => String(it.i) === anchor.id)) anchor = null;
-  if (!stick && !anchor) {
-    const top = list.getBoundingClientRect().top;
-    let lo = 0, hi = itemsEl.children.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1;
-      if (itemsEl.children[mid].getBoundingClientRect().bottom > top) hi = mid;
-      else lo = mid + 1;
-    }
-    const retained = new Set(visibleItems.map(it => String(it.i)));
-    for (let n = lo; n < itemsEl.children.length; n++) {
-      const el = itemsEl.children[n];
-      if (retained.has(el.dataset.i)) { anchor = { id: el.dataset.i, top: el.getBoundingClientRect().top - top }; break; }
-    }
-    if (!anchor) for (let n = lo - 1; n >= 0; n--) {
-      const el = itemsEl.children[n];
-      if (retained.has(el.dataset.i)) { anchor = { id: el.dataset.i, top: el.getBoundingClientRect().top - top }; break; }
-    }
-  }
+  const stick = followBottom;
+  if (keepReading && !threadChanged && !sessionChanged && scrollMode === 'freeScroll') {
+    for (const el of itemsEl.children) if (el.classList.contains('tool')) readingExecutionRows.add(el.dataset.i);
+  } else readingExecutionRows.clear();
+  const visibleItems = visibleChatItems(V.items, chat.busy, readingExecutionRows);
+  const visibleIds = new Set(visibleItems.map(it => String(it.i)));
+  for (const id of readingExecutionRows) if (!visibleIds.has(id)) readingExecutionRows.delete(id);
   const els = visibleItems.map(it => {
     const key = JSON.stringify(it);
     const hit = cache.get(it.i);
@@ -645,18 +791,31 @@ function renderChat(chat, stale, loading = false) {
 
   // A cached render is display-only: no action buttons, questions or queue actions until the fresh chat arrives.
   $('actionBar').innerHTML = chatStale ? '' : buttonsHtml(chat.global, 'g');
+  if (!chatStale && chat.global?.length) maybeAutoRetry({ i: 'global', btnItem: 'g', b: chat.global });
   $('actionBar').classList.toggle('show', !chatStale && chat.global.length > 0);
   renderQueue(chatStale ? false : chat.busy, chatStale ? [] : (chat.queued || []), chat.subagents || [], chat.readonly, chat.changed, chat.queuedCount);
   renderQuestions(chatStale || (chat.readonly && !chat.questions?.codex) ? null : chat.questions);
 
   paintHistoryStatus();
-  restoreChatPosition(anchor, stick);
+  restoreChatPosition(stick);
   historyRendering = false;
   if (!stick && previous && JSON.stringify(previous.items) !== JSON.stringify(chat.items)) $('toBottom').textContent = '↓ 有新消息';
   updateToBottom();
+  if (initialBottomSelection === viewSel && !chatStale && !loading && chat.items.length) {
+    setChatScrollTop(maxChatScrollTop());
+    setScrollMode('followBottom');
+    initialBottomSelection = null;
+    updateToBottom();
+  }
   noteSwitch(chat);
   if (SC.jump && SC.items.has(SC.jump)) { const j = SC.jump; SC.jump = null; scJump(j); }
   completeTurnNavigation();
+  resumeHistoryAfterIdle();
+  applyPendingHistory();
+  if ((!stale || chat.imagePreview) && !loading && windowReady && liveChatSelection === viewSel) {
+    if (!chat.readonly) rememberConversation();
+    connContentReady();
+  }
 }
 
 let subsOpen = false, queueOpen = store.get('queue-open') !== '0';
@@ -738,10 +897,17 @@ function finishQuestion(m) {
   const pending = qnPending;
   qnPending = null;
   if (pending.sel !== viewSel) return;
-  if (m.ok && pending.message.id) {
+  const request = qnState?.requests?.find(r => r.id === pending.message.id);
+  if (pending.message.id && !request) {
+    qnSig = '';
+    renderQuestions(qnState);
+    finishPending(['正在提交回答…']);
+    return;
+  }
+  if (m.ok && request) {
     const answerKey = [currentComputer()?.id || '', viewSel, 'chat', pending.message.id].join('|');
     drafts.delete(answerKey); draftMentions.delete(answerKey);
-    if (pending.message.id.startsWith('async:') && (pending.message.advance || pending.message.n === (qnState?.requests?.find(r => r.id === pending.message.id)?.buttons.length || 0) - 1)) {
+    if (pending.message.id.startsWith('async:') && (pending.message.advance || pending.message.n === request.buttons.length - 1)) {
       qnState = { ...qnState, requests: qnState.requests.filter(r => r.id !== pending.message.id) };
     }
     for (const key of qnDrafts.keys()) if (key.startsWith(pending.message.id + '|')) qnDrafts.delete(key);
@@ -756,10 +922,16 @@ function finishQuestion(m) {
 }
 function renderQuestions(qs) {
   const bar = $('qnBar');
+  if (qs?.codex && currentApp !== 'codex') qs = null;
   if (qnView !== viewSel) { qnView = viewSel; qnSig = ''; qnPending = null; qnDrafts.clear(); }
+  if (qnPending && (qnPending.message.id ? !qs?.requests?.some(r => r.id === qnPending.message.id) : !qs?.list?.length)) {
+    qnPending = null;
+    finishPending(['正在提交回答…']);
+    questionBusy();
+  }
   qnState = qs;
   const answers = qs?.codex ? qs.requests.filter(r => r.id.startsWith('async:')) : [];
-  setQuestionCompose(answers.find(r => r.id === questionCompose?.id && questionCompose.sel === viewSel)?.id || answers[0]?.id || null);
+  setQuestionCompose(answers.find(r => r.id === questionCompose?.id && questionCompose.sel === viewSel)?.id || null);
   bar.classList.toggle('codex', !!qs?.codex);
   const sig = JSON.stringify(qs);
   if (sig === qnSig) return;
@@ -879,13 +1051,14 @@ function renderQueue(busy, queued, subs = [], readonly = false, changed = 0, qCo
     if (subsOpen) html += subs.map(n => `<div class="q"><span class="qt sa">${esc(n)}</span>`
       + ibtn('eye', '查看', `data-sub="${esc(n)}" data-part="open"`) + ibtn('stop', '停止', `data-sub="${esc(n)}" data-part="stop"`, 'del') + '</div>').join('');
   }
-  const pending = pendingEchoes.filter(p => p.kind === 'queue' && p.sel === viewSel);
-  const n = Math.max(queued.length, devin ? qCount || 0 : 0) + pending.length;
+  const pending = pendingEchoes.filter(p => p.kind === 'queue' && p.sel === viewSel && !p.represented);
+  const nativeCount = Math.max(queued.length, devin ? qCount || 0 : 0);
+  const n = queued.length ? nativeCount + pending.length : Math.max(nativeCount, pending.length);
   if (n) {
     html += `<div class="qhRow"><button class="qh fold" data-qfold aria-expanded="${queueOpen}">${queueOpen ? '▾' : '▸'} <span>排队中 ${n} 条</span></button>${devin ? ibtn('trash', '清空', 'data-a="clear" data-q=""', 'del') : ''}</div>`;
   }
   if (n && queueOpen) {
-    html += pending.map(p => `<div class="q pending"><span class="qt">${esc(p.text)}</span><span class="sub">发送中…</span></div>`).join('');
+    html += pending.map(p => `<div class="q pending"><span class="qt">${esc(p.text)}</span><span class="sub">${I18N.tr(p.syncing ? '正在同步…' : p.confirmed ? '已排队' : '发送中…')}</span></div>`).join('');
     html += queued.map(q => `<div class="q"><span class="qt">${esc(q.t || '(空)')}</span>`
       + (supportsCapability('queueEdit') ? ibtn('edit', devin ? '从队列取出，放回输入框' : '修改', `data-q="${esc(q.id)}" data-a="edit"`) : '')
       + ibtn('enter', '打断当前这一轮，立刻发送', `data-q="${esc(q.id)}" data-a="send"`)
@@ -898,10 +1071,15 @@ function renderQueue(busy, queued, subs = [], readonly = false, changed = 0, qCo
   if (document.body.classList.contains('kb')) fitViewport();
 }
 
+function sendQueueAction(id, action, text) {
+  const echoes = pendingEchoes.filter(p => p.sel === viewSel && (action === 'clear'
+    ? p.kind === 'queue' || p.represented : p.represented && p.queueId === id)).map(p => p.requestId);
+  return send({ t: 'queue', id, action, text, echoes });
+}
 function editQueued(id) {
   const q = (lastChat?.queued || []).find(x => x.id === id);
   if (!q) return status('这条排队消息已经不在了', false);
-  if (currentApp === 'devin') { status('正在取出…'); return send({ t: 'queue', id, action: 'edit' }); }
+  if (currentApp === 'devin') { status('正在取出…'); return sendQueueAction(id, 'edit'); }
   openSheet('queueEdit', `<h3>修改排队消息</h3>
     <textarea id="qEdit" style="width:100%;box-sizing:border-box;min-height:120px;max-height:50dvh;margin-bottom:10px"></textarea>
     <button class="opt" id="qSave" style="justify-content:center;background:var(--accent);border-color:var(--accent-b);color:#fff;font-weight:600">保存（仍在排队）</button>`);
@@ -909,7 +1087,7 @@ function editQueued(id) {
   $('qSave').onclick = () => {
     const v = $('qEdit').value;
     if (!v.trim()) return status('内容不能为空；不想要这条就点「删除」', false);
-    send({ t: 'queue', id, action: 'edit', text: v });
+    sendQueueAction(id, 'edit', v);
     closeSheet();
     status('正在修改排队消息…');
   };
@@ -929,25 +1107,24 @@ $('queueBar').onclick = async e => {
     if (b.dataset.part === 'stop' && !await ask(`停止子 Agent「${b.dataset.sub}」？\n它做到一半的工作会中断。`, '停止')) return;
     send({ t: 'subagent', name: b.dataset.sub, part: b.dataset.part });
     status(b.dataset.part === 'stop' ? '已停止子 Agent' : '正在打开子 Agent…');
-    if (b.dataset.part === 'open') list.scrollTop = list.scrollHeight;
     return;
   }
   if (b.dataset.a === 'edit') return editQueued(b.dataset.q);
   if (b.dataset.a === 'clear') {
     if (!await ask('清空 Devin 的排队消息？', '清空')) return;
-    send({ t: 'queue', id: '', action: 'clear' });
+    sendQueueAction('', 'clear');
     status('正在清空排队消息…');
     return;
   }
   if (b.dataset.a === 'send' && !await ask('立即发送这条消息？\nAgent 当前这一轮会被打断。', '立即发送')) return;
   if (b.dataset.a === 'remove' && !await ask('删除这条排队消息？', '删除')) return;
-  send({ t: 'queue', id: b.dataset.q, action: b.dataset.a });
+  sendQueueAction(b.dataset.q, b.dataset.a);
   status(b.dataset.a === 'send' ? '已立即发送这条排队消息' : '已删除这条排队消息');
 };
 
 function updateToBottom() {
   if (nearBottom()) $('toBottom').textContent = '↓ 最新';
-  $('toBottom').style.display = nearBottom() ? 'none' : 'block';
+  $('toBottom').style.display = atBottom() && isFollowingBottom() ? 'none' : 'block';
   updateTurnNav();
 }
 function updateTurnNav() {
@@ -962,12 +1139,21 @@ function updateTurnNav() {
     }
   }
 }
-const turnNavSizeObserver = new ResizeObserver(updateTurnNav);
+let turnNavFrame = 0;
+function scheduleTurnNavUpdate() {
+  if (turnNavFrame) return;
+  turnNavFrame = requestAnimationFrame(() => { turnNavFrame = 0; updateTurnNav(); });
+}
+const turnNavSizeObserver = new ResizeObserver(scheduleTurnNavUpdate);
 for (const el of [$('listWrap'), itemsEl]) turnNavSizeObserver.observe(el);
 function resetTurnNav() {
   clearTimeout(turnNavTimer);
   if (turnNavPointer?.dragging) { chatTouching = chatScrolling = false; clearTimeout(scrollIdle); }
   turnNavPointer = null; turnNavSkipClick = false;
+  suppressHistoryArm = false;
+  historyArmed = false;
+  historyPullUp = false;
+  historyWheelPullUp = false;
   turnNavHeld = turnNavUser = false;
   turnNavCursor = turnNavPending = null;
   $('turnNav').classList.remove('show');
@@ -982,6 +1168,7 @@ function showTurnNav() {
   }, 1500);
 }
 function turnNavGesture() {
+  initialBottomSelection = null;
   turnNavCursor = turnNavPending = null;
   turnNavUser = true;
   showTurnNav();
@@ -992,8 +1179,13 @@ function conversationTurns() {
     .sort((a, b) => (a.order ?? acpNum(a.i)) - (b.order ?? acpNum(b.i)));
 }
 function jumpToTurn(id) {
-  clearTimeout(scrollIdle);
-  chatScrolling = false;
+  stopChatMotion(() => {
+    const target = itemsEl.querySelector(`[data-i="${CSS.escape(String(id))}"]`);
+    if (target) setChatScrollTop(list.scrollTop + target.getBoundingClientRect().top - list.getBoundingClientRect().top - 8);
+    setScrollMode('freeScroll');
+    lastScrollTop = list.scrollTop;
+    updateToBottom();
+  });
   let el = itemsEl.querySelector(`[data-i="${CSS.escape(String(id))}"]`);
   if (!el || deferredScrollRender) {
     if (!el) {
@@ -1005,13 +1197,11 @@ function jumpToTurn(id) {
     renderChat(lastChat, chatStale);
     el = itemsEl.querySelector(`[data-i="${CSS.escape(String(id))}"]`);
   }
-  if (!el) return;
+  if (!el) { setScrollMode('freeScroll'); return; }
   historyArmed = false;
-  restoreChatPosition({ id: String(id), top: 8 });
-  lastScrollTop = list.scrollTop;
   turnNavCursor = { id, sel: viewSel, thread: lastChat.thread };
-  el.classList.add('flash');
-  setTimeout(() => el.classList.remove('flash'), 1800);
+  el.classList.add('turnHighlight');
+  setTimeout(() => el.classList.remove('turnHighlight'), 1800);
   updateToBottom();
   showTurnNav();
 }
@@ -1024,7 +1214,8 @@ function completeTurnNavigation() {
   else if (!historyRequest) turnNavPending = null;
 }
 function navigateTurn(direction) {
-  if (!lastChat || chatTouching) return;
+  if (!lastChat) return;
+  stopChatMotion();
   const turns = conversationTurns();
   let target;
   if (turnNavCursor?.sel === viewSel && turnNavCursor.thread === lastChat.thread) {
@@ -1039,19 +1230,29 @@ function navigateTurn(direction) {
   }
   if (target) { turnNavPending = null; jumpToTurn(target.i); }
   else if (direction < 0 && turns.length) {
+    setScrollMode('freeScroll');
     turnNavPending = { sel: viewSel, thread: lastChat.thread, before: turns[0].i };
     if (historyRequest) return;
     clearTimeout(scrollIdle); chatScrolling = false;
     loadOlderMessages();
     if (!historyRequest && !deferredScrollRender) completeTurnNavigation();
-  }
+  } else setScrollMode('freeScroll');
 }
 $('previousTurn').onclick = () => navigateTurn(-1);
 $('nextTurn').onclick = () => navigateTurn(1);
 $('toBottom').addEventListener('click', resetTurnNav);
 $('turnNav').addEventListener('pointerdown', e => {
   if (e.button !== 0 || turnNavPointer) return;
+  cancelChatMotion();
+  initialBottomSelection = null;
+  bottomScrollIntent = null;
   e.preventDefault();
+  suppressHistoryArm = true;
+  historyArmed = false;
+  historyPullUp = false;
+  historyWheelPullUp = false;
+  scrollCorrection = null;
+  layoutDirty = false;
   const nav = $('turnNav');
   turnNavSkipClick = false;
   turnNavPointer = { id: e.pointerId, y: e.clientY, top: nav.offsetTop,
@@ -1070,12 +1271,14 @@ $('turnNav').addEventListener('pointermove', e => {
     pointer.dragging = true;
     turnNavGesture();
     chatTouching = chatScrolling = true;
-    pinnedBottom = false;
+    suppressHistoryArm = true;
+    layoutDirty = false;
+    scrollCorrection = null;
+    setScrollMode('programmatic');
     clearTimeout(scrollIdle);
   }
   pointer.progress = Math.max(0, Math.min(1, (pointer.top + dy) / pointer.travel));
-  list.scrollTop = pointer.progress * (list.scrollHeight - list.clientHeight);
-  readingAnchor = captureChatAnchor();
+  setChatScrollTop(pointer.progress * (list.scrollHeight - list.clientHeight));
   settleChatScroll();
 });
 for (const event of ['pointerup', 'pointercancel', 'lostpointercapture']) $('turnNav').addEventListener(event, e => {
@@ -1083,7 +1286,19 @@ for (const event of ['pointerup', 'pointercancel', 'lostpointercapture']) $('tur
   if (!pointer || pointer.id !== e.pointerId) return;
   turnNavSkipClick = event === 'pointerup' && (pointer.dragging || !pointer.opened);
   turnNavPointer = null; turnNavHeld = false;
-  if (pointer.dragging) { chatTouching = false; settleChatScroll(); }
+  if (pointer.dragging) {
+    chatTouching = false;
+    setScrollMode(pointer.progress === 1 && atBottom() ? 'followBottom' : 'freeScroll');
+    historyPullUp = false;
+    historyWheelPullUp = false;
+    historyArmed = false;
+    settleChatScroll();
+    suppressHistoryArm = false;
+    requestAnimationFrame(() => { if (!chatTouching) settleChatScroll(); });
+  } else {
+    suppressHistoryArm = false;
+    if (deferredScrollRender) flushSettledChat();
+  }
   updateTurnNav(); showTurnNav();
 });
 $('turnNav').addEventListener('click', e => {
@@ -1094,105 +1309,244 @@ $('turnNav').addEventListener('touchstart', e => {
 }, { passive: true });
 function paintHistoryStatus() {
   if (pendingHistoryStatus === null) return;
+  const top = list.scrollTop, height = list.scrollHeight;
   $('older').disabled = !!historyRequest;
   if (historyAtEnd) $('older').hidden = true;
   $('historyStatus').hidden = false;
   $('historyStatus').textContent = pendingHistoryStatus;
   pendingHistoryStatus = null;
+  if (!isFollowingBottom() && !chatMotionFrame) setChatScrollTop(top + list.scrollHeight - height);
 }
 function showHistoryStatus(message) {
   pendingHistoryStatus = I18N.tr(message);
-  // A pending chat frame applies the notice and older rows under the same anchor.
+  // Apply status text together with pending chat content while a gesture is active.
   if (chatScrolling || chatTouching || chatFrame) return;
-  const anchor = captureChatAnchor();
   paintHistoryStatus();
-  restoreChatPosition(anchor);
+  restoreChatPosition(isFollowingBottom());
 }
 function loadOlderMessages() {
-  if (!lastChat || historyRequest || chatScrolling || chatTouching) return;
+  if (!lastChat || historyRequest || historyPagePending) return;
+  initialBottomSelection = null;
+  setScrollMode('freeScroll');
   historyArmed = false;
+  historyPullUp = false;
+  historyWheelPullUp = false;
   if (!$('cachedMore').hidden) {
     historyRendering = true;
-    SC.show += 80;
-    renderChat(lastChat);
+    historyPagePending = { local: true, sel: viewSel, thread: lastChat.thread };
+    applyPendingHistory();
     return;
   }
   requestOlderRemote();
 }
-// Asks the desktop for an older batch. Unlike the cached-rows path this may fire mid-gesture
-// (maybePrefetchOlder): it must not write scrollTop then, but the request itself is safe — the
-// incoming chat render is deferred until the scroll settles.
+// Requests older data without moving the phone viewport.
 function requestOlderRemote() {
   if (!lastChat || historyRequest) return;
   historyArmed = false;
+  historyPullUp = false;
+  historyWheelPullUp = false;
   if (historyAtEnd || $('older').hidden) {
     showHistoryStatus('已到最早消息');
     return;
   }
-  if (currentApp === 'codex' && lastChat.busy) {
-    showHistoryStatus('生成中，稍后上滑加载历史');
-    return;
-  }
-  historyRequest = { id: String(++historySerial), sel: viewSel };
+  historyWaitingForIdle = false;
+  historyRequest = { id: String(++historySerial), sel: viewSel, thread: lastChat.thread };
   historyRendering = true;
   historyExpanded = true;
   showHistoryStatus('正在加载更早的消息…');
-  send({ t: 'scrollChat', dy: -900, automatic: true, history: true, requestId: historyRequest.id });
+  const paging = {};
+  if (currentApp === 'codex') {
+    const orders = lastChat.items.map(it => it.order).filter(Number.isFinite);
+    Object.assign(paging, { before: historyCursor ?? (orders.length ? Math.max(...orders) + 1 : null),
+      known: lastChat.items.map(it => it.i), details: executionRecordsShown() });
+  }
+  send({ t: 'scrollChat', dy: -900, automatic: true, history: true, requestId: historyRequest.id, ...paging });
+}
+function receiveHistoryPage(m) {
+  if (!historyRequest || m.requestId !== historyRequest.id || m.sel !== historyRequest.sel || m.thread !== historyRequest.thread || lastChat?.thread !== m.thread) return;
+  historyPagePending = m;
+  applyPendingHistory();
+}
+function applyPendingHistory() {
+  if (!historyPagePending || chatTouching || chatMomentum || chatScrolling || turnNavPointer?.dragging || userSelecting()) return;
+  const page = historyPagePending;
+  historyPagePending = null;
+  if (page.sel !== viewSel || page.thread !== lastChat?.thread) return;
+  // Finish live updates first, so the height difference below contains only the history insertion.
+  if (queuedChat?.sel === viewSel) {
+    const next = queuedChat;
+    invalidateChatRender();
+    renderChat(next.chat, next.stale);
+  }
+  let chat = lastChat;
+  if (page.local) SC.show += 80;
+  else {
+    const known = new Set(chat.items.map(it => it.i));
+    SC.show += page.items.filter(it => !known.has(it.i)).length;
+    if (Number.isFinite(page.before)) historyCursor = page.before;
+    const rows = [...new Map([...page.items, ...chat.items].map(it => [it.i, it])).values()];
+    const order = it => Number.isFinite(it.order) ? it.order : Number(/^acp(\d+)/.exec(it.i)?.[1] || 0);
+    rows.sort((a, b) => order(a) - order(b));
+    chat = { ...chat, items: rows, earlier: page.earlier };
+  }
+  setScrollMode('freeScroll');
+  const top = list.scrollTop, edge = list.getBoundingClientRect().top;
+  const before = new Map([...itemsEl.children].map(el => {
+    const r = el.getBoundingClientRect();
+    return [el, { top: r.top - edge + top, bottom: r.bottom - edge + top }];
+  }));
+  renderChat(chat, chatStale);
+  // Cached windows can also fill gaps below the viewport. Only count added space above it.
+  const offset = list.scrollTop - list.getBoundingClientRect().top;
+  let delta = 0, previous = null;
+  for (const el of itemsEl.children) {
+    const old = before.get(el);
+    if (!old) continue;
+    const r = el.getBoundingClientRect(), now = { top: r.top + offset, bottom: r.bottom + offset };
+    if (!previous) delta = now.top - old.top;
+    else if (previous.old.bottom <= top) delta += now.top - previous.now.bottom - (old.top - previous.old.bottom);
+    if (old.bottom <= top) delta += now.bottom - now.top - (old.bottom - old.top);
+    previous = { old, now };
+  }
+  // Commit once before paint and discard the layout measurements immediately.
+  setChatScrollTop(top + delta);
+  updateToBottom();
 }
 function finishHistory(m) {
   if (!historyRequest || m.requestId !== historyRequest.id || m.sel !== historyRequest.sel) return;
   historyRequest = null;
   if (m.earlier === false) historyAtEnd = true;
-  showHistoryStatus(m.error || (m.blocked ? '生成中，稍后上滑加载历史' : m.earlier === false && $('cachedMore').hidden ? '已到最早消息' : '继续上滑可加载更早的消息'));
-  if (!deferredScrollRender) historyRendering = false;
+  else if (m.earlier === true) historyAtEnd = false;
+  showHistoryStatus(m.error || (m.pending ? '历史消息正在加载，请稍后重试' : m.earlier === false && $('cachedMore').hidden ? '已到最早消息' : '继续上滑可加载更早的消息'));
+  if (!deferredScrollRender && !historyPagePending) historyRendering = false;
   if (!deferredScrollRender && !chatFrame) completeTurnNavigation();
   maybePrefetchOlder();
 }
-const prefetchZone = () => Math.max(600, list.clientHeight * 1.5);
 function maybeLoadOlder() {
-  if (historyArmed && list.scrollTop <= prefetchZone()) loadOlderMessages();
+  if (historyArmed && list.scrollTop <= 1) {
+    historyArmed = false;
+    loadOlderMessages();
+  }
 }
 function maybePrefetchOlder() {
-  if (historyArmed && list.scrollTop <= prefetchZone() && !historyRequest && !deferredScrollRender && $('cachedMore').hidden && !historyAtEnd && !$('older').hidden) requestOlderRemote();
+  if (!chatTouching && !chatMomentum && !turnNavPointer?.dragging && !suppressHistoryArm && historyArmed && list.scrollTop <= 1 && !historyRequest && !deferredScrollRender && $('cachedMore').hidden && !historyAtEnd && !$('older').hidden) requestOlderRemote();
+}
+function resumeHistoryAfterIdle() {
+  if (!historyWaitingForIdle || !lastChat || lastChat.busy || chatScrolling || chatTouching || historyRequest) return;
+  if (list.scrollTop > 1) { historyWaitingForIdle = false; return; }
+  historyWaitingForIdle = false;
+  requestOlderRemote();
+}
+function flushSettledChat() {
+  if (chatTouching) return;
+  chatScrolling = false;
+  chatMomentum = false;
+  if (userReachedBottom()) setScrollMode('followBottom');
+  // The compositor may deliver the last user scroll after this idle callback.
+  chatUserScroll = false;
+  if (isFollowingBottom() && layoutDirty && !scrollCorrection) scrollCorrection = { kind: 'bottom' };
+  if (deferredScrollRender && lastChat) {
+    deferredScrollRender = false;
+    layoutDirty = false;
+    syncScrollFlush = true;
+    try { renderChat(lastChat); } finally { syncScrollFlush = false; }
+  } else if (pendingHistoryStatus !== null && !chatFrame) {
+    paintHistoryStatus();
+    restoreChatPosition(isFollowingBottom());
+  }
+  if (layoutDirty && !isFollowingBottom() && !scrollCorrection) {
+    layoutDirty = false;
+  }
+  if (scrollCorrection) reconcileChatScroll(true);
+  applyPendingHistory();
+  maybeLoadOlder();
+  updateToBottom();
+  updateComposeCompact();
 }
 function settleChatScroll() {
-  const top = list.scrollTop;
+  const top = chatScrollTop();
   if (restoringChatScroll) { lastScrollTop = top; updateToBottom(); return; }
-  if (top < lastScrollTop) { historyArmed = true; pinnedBottom = false; }
+  if (chatTouching && top < lastScrollTop) historyPullUp = true;
+  if (chatUserScroll && !atBottom() && top < lastScrollTop && !chatTouching && !chatMomentum && !suppressHistoryArm && scrollMode !== 'programmatic' && (historyPullUp || historyWheelPullUp)) {
+    historyArmed = true;
+    setScrollMode('freeScroll');
+  }
+  if (bottomScrollIntent?.sel === viewSel && top > lastScrollTop && scrollMode !== 'programmatic') {
+    bottomScrollIntent.top = top;
+    bottomScrollIntent.max = maxChatScrollTop();
+  }
   lastScrollTop = top;
-  if (pinnedBottom && !nearBottom()) pinnedBottom = false;
-  else if (!pinnedBottom && atBottom()) pinnedBottom = true;
+  if (userReachedBottom()) setScrollMode('followBottom');
   chatScrolling = true;
   clearTimeout(scrollIdle);
   scrollIdle = setTimeout(() => {
     if (chatTouching) return;
     // Scroll events can lag the compositor during momentum scrolling.
-    if (list.scrollTop !== lastScrollTop) { settleChatScroll(); return; }
-    chatScrolling = false;
-    if (deferredScrollRender && lastChat) { deferredScrollRender = false; renderChat(lastChat); }
-    else if (pendingHistoryStatus !== null && !chatFrame) {
-      const anchor = captureChatAnchor();
-      paintHistoryStatus();
-      restoreChatPosition(anchor);
-    }
-    readingAnchor = pinnedBottom ? null : captureChatAnchor();
-    maybeLoadOlder();
-  }, 150);
+    if (chatScrollTop() !== lastScrollTop) { settleChatScroll(); return; }
+    flushSettledChat();
+  }, chatMomentum ? 300 : 150);
   updateToBottom();
   maybePrefetchOlder();
 }
 list.addEventListener('scroll', () => {
   if (!restoringChatScroll && turnNavUser) showTurnNav();
-  if (!restoringChatScroll && !pinnedBottom) stabilizeChatReading();
+  if (!restoringChatScroll && (chatUserScroll || bottomScrollIntent) && scrollMode !== 'programmatic' && !atBottom() && chatScrollTop() < lastScrollTop) {
+    setScrollMode('freeScroll');
+    bottomScrollIntent = null;
+  }
+  if (!suppressHistoryArm && !turnNavPointer?.dragging && (historyPullUp || historyWheelPullUp) && list.scrollTop <= 1) historyArmed = true;
   settleChatScroll();
 }, { passive: true });
-let historyTouchY = 0;
-list.addEventListener('wheel', e => { turnNavGesture(); if (!readingAnchor) readingAnchor = captureChatAnchor(); restoringChatScroll = false; if (e.deltaY < 0) { historyArmed = true; pinnedBottom = false; } settleChatScroll(); }, { passive: true });
-list.addEventListener('pointerdown', () => { historyArmed = true; }, { passive: true });
-list.addEventListener('touchstart', e => { readingAnchor = captureChatAnchor(); historyTouchY = e.touches[0].clientY; chatTouching = true; chatScrolling = true; clearTimeout(scrollIdle); }, { passive: true });
-list.addEventListener('touchmove', e => { turnNavGesture(); restoringChatScroll = false; if (e.touches[0].clientY > historyTouchY) { historyArmed = true; pinnedBottom = false; } historyTouchY = e.touches[0].clientY; }, { passive: true });
-for (const event of ['touchend', 'touchcancel']) list.addEventListener(event, () => { chatTouching = false; restoringChatScroll = false; settleChatScroll(); }, { passive: true });
-$('toBottom').onclick = () => { restoreChatPosition(null, true); };
+list.addEventListener('scrollend', () => {
+  if (chatTouching || (!chatMomentum && !chatScrolling)) return;
+  clearTimeout(scrollIdle);
+  flushSettledChat();
+}, { passive: true });
+let historyTouchY = 0, historyPullUp = false, historyWheelPullUp = false;
+list.addEventListener('wheel', e => {
+  if (e.deltaY) cancelChatMotion();
+  turnNavGesture();
+  restoringChatScroll = false;
+  if (e.deltaY) { chatUserScroll = true; noteBottomScrollIntent(e.deltaY > 0); }
+  if (e.deltaY < 0) { historyWheelPullUp = true; if (list.scrollTop <= 1) { historyArmed = true; settleChatScroll(); } }
+  else if (e.deltaY > 0) { historyWheelPullUp = false; historyArmed = false; if (atBottom()) settleChatScroll(); }
+}, { passive: true });
+list.addEventListener('touchstart', e => { cancelChatMotion(); bottomScrollIntent = null; historyTouchY = e.touches[0].clientY; historyPullUp = false; historyWheelPullUp = false; historyArmed = false; chatMomentum = false; chatUserScroll = false; chatTouching = true; chatScrolling = true; clearTimeout(scrollIdle); }, { passive: true });
+list.addEventListener('touchmove', e => {
+  turnNavGesture();
+  restoringChatScroll = false;
+  const y = e.touches[0].clientY, dy = y - historyTouchY;
+  if (dy) { chatUserScroll = true; noteBottomScrollIntent(dy < 0); }
+  if (dy && list.scrollTop <= 1) historyPullUp = true;
+  if (dy < 0) {
+    historyPullUp = true;
+    if (list.scrollTop <= 1) historyArmed = true;
+  }
+  historyTouchY = y;
+}, { passive: true });
+for (const event of ['touchend', 'touchcancel']) list.addEventListener(event, () => {
+  if (!chatTouching) return;
+  chatMomentum = event === 'touchend';
+  if (event === 'touchcancel') bottomScrollIntent = null;
+  chatTouching = false;
+  restoringChatScroll = false;
+  if (historyPullUp && list.scrollTop <= 1) historyArmed = true;
+  settleChatScroll();
+}, { passive: true });
+function jumpToLatest() {
+  stopChatMotion(() => {
+    setChatScrollTop(maxChatScrollTop());
+    setScrollMode('followBottom');
+    updateToBottom();
+  });
+  resetTurnNav();
+  suppressHistoryArm = false;
+  if (deferredScrollRender && lastChat) {
+    deferredScrollRender = false;
+    renderChat(lastChat, chatStale);
+  }
+}
+$('toBottom').onclick = jumpToLatest;
 $('older').onclick = () => loadOlderMessages();
 
 // LaTeX in text typed by the user ($..$, $..$, \\(..\\), \\[..\\]): turned into .math placeholders for KaTeX.
@@ -1408,6 +1762,11 @@ document.addEventListener('click', async e => {
     await copyText(b.closest('.msg').copyText, b, false);
     return;
   }
+  if (currentApp === 'codex' && /^(View changes|View changed files|View file changes)$/i.test(b.dataset.actionLabel || '')) {
+    status('读取改动的文件…');
+    send({ t: 'changes' });
+    return;
+  }
   if (RISKY.test(b.textContent.trim()) && !await ask(`确定要点「${b.textContent.trim()}」吗？`, b.textContent.trim())) return;
   b.closest('.btns')?.querySelectorAll('button').forEach(button => { button.disabled = true; });
   send({ t: 'click', item: b.dataset.item, n: Number(b.dataset.n), actionId: b.dataset.actionId, label: b.dataset.actionLabel, sel: viewSel });
@@ -1430,7 +1789,8 @@ function showCodexSkills(rows) {
     const r = rows[Number(b.dataset.skill)], token = '/' + r.label;
     closeSheet(); text.focus();
     text.setRangeText(token + ' ', text.selectionStart, text.selectionEnd, 'end');
-    MN.mentions.push({ ...r, token });
+    MN.mentions.push({ ...r, token, at: text.selectionStart - token.length - 1 });
+    MN.value = text.value;
     autosize(); saveDraft();
   };
   paint();
@@ -1438,7 +1798,7 @@ function showCodexSkills(rows) {
 let codexFileRequest = 0;
 async function openCodexFilePicker(token) {
   const scope = chatInputKey(), selected = new Map();
-  const start = token?.start ?? text.selectionStart, end = token?.caret ?? text.selectionEnd;
+  const start = token?.start ?? text.selectionStart, end = token?.end ?? token?.caret ?? text.selectionEnd;
   let directory = null;
   mentionHide();
   const paint = (note = '') => {
@@ -1464,9 +1824,16 @@ async function openCodexFilePicker(token) {
     $('codexFileAdd').onclick = () => {
       if (scope !== chatInputKey()) { closeSheet(); return status('会话已切换，请重新选择文件', false); }
       if (takeMentions(text.value.slice(0, start) + text.value.slice(end)).length + selected.size > 12) return status('每条消息最多添加 12 个引用项', false);
-      const mentions = [...selected.values()].map(entry => ({ token: '@' + entry.name, q: entry.name, label: entry.name, path: entry.path, section: 'local-files', trigger: '@' }));
-      text.setRangeText(mentions.map(m => m.token).join(' ') + ' ', start, end, 'end');
+      let at = start;
+      const mentions = [...selected.values()].map(entry => {
+        const token = '@' + entry.name;
+        const mention = { token, q: entry.name, label: entry.name, path: entry.path, section: 'local-files', trigger: '@', at };
+        at += token.length + 1;
+        return mention;
+      });
+      text.setRangeText(mentions.map(m => m.token).join(' ') + (/\s/.test(text.value[end] || '') ? '' : ' '), start, end, 'end');
       MN.mentions.push(...mentions);
+      MN.value = text.value;
       closeSheet(); autosize(); saveDraft(); text.focus();
     };
   };
