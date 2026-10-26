@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-const PRIMARY = /^(run|allow|accept|approve|keep|continue|build|yes|运行|允许|接受|继续)/i;
+const PRIMARY = /^(run|allow|accept|approve|keep|continue|build|yes|retry|运行|允许|接受|继续|重试)/i;
 const store = {
   get: k => localStorage.getItem('cr-' + k),
   set: (k, v) => v == null ? localStorage.removeItem('cr-' + k) : localStorage.setItem('cr-' + k, v),
@@ -7,7 +7,7 @@ const store = {
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const themeName = () => ({ dark: '深色', light: '浅色', auto: '跟随系统' })[store.get('theme') || 'dark'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const APP_VERSION = 'v201'; // keep in sync with the CACHE name in sw.js
+const APP_VERSION = 'v250'; // keep in sync with the CACHE name in sw.js
 
 let base = null, info = null, ws = null, authed = false, failures = 0;
 let windowReady = false;
@@ -40,18 +40,24 @@ const setAgentList = (key, list) => { agentLists.delete(key); agentLists.set(key
 const agentListKey = () => (currentComputer()?.key || '') + ':' + currentApp + (currentApp === 'cursor' ? ':' + (currentComputer()?.windowId || currentWindow || '') : '');
 function receiveAgents(m) {
   if (m.app && m.app !== currentApp) return;
+  if (m.sel && m.sel !== viewSel) return;
   const key = agentListKey();
   const previous = agentLists.get(key) || [];
-  const titles = new Map(previous.map(a => [a.id, a.title]));
+  const previousById = new Map(previous.map(a => [a.id, a]));
   let list = m.list || [];
-  list = list.map(a => ({ ...a, title: a.title || titles.get(a.id) || '未命名会话' }));
+  list = list.map(a => {
+    const old = previousById.get(a.id);
+    const running = old && !Object.hasOwn(a, 'running') && Object.hasOwn(old, 'running') ? { running: old.running } : {};
+    return { ...a, ...running, title: a.title || old?.title || '未命名会话' };
+  });
   if (m.partial) {
-    const remaining = (agentLists.get(key) || []).filter(a => String(a.id).startsWith('pick:'));
-    list = [...list, ...remaining.filter(a => !list.some(b => b.title === a.title))];
+    const remaining = (agentLists.get(key) || []).filter(a => a.picker);
+    list = [...list, ...remaining.filter(a => !list.some(b => agentThreadKey(b) === agentThreadKey(a)))];
   }
   const changed = JSON.stringify(agentLists.get(key)) !== JSON.stringify(list);
   if (changed) setAgentList(key, list);
   if (!m.silent) finishPending(['正在读取 Agent 列表…', '正在归档…']);
+  if (sheetKind === 'agent-actions') return;
   if (sheetKind === 'agents' && !changed) return;
   if (!m.silent || (sheetKind === 'agents' && changed)) {
     finishPending(['正在读取 Agent 列表…', '正在归档…']);
@@ -97,8 +103,10 @@ function fitViewport() {
   if (!vv) return;
   const focused = /^(INPUT|TEXTAREA)$/.test(document.activeElement?.tagName) || document.activeElement?.isContentEditable;
   const keyboard = !!focused && (vv.offsetTop > 0 || vv.height < window.innerHeight - 80);
+  const wasKeyboard = document.body.classList.contains('kb');
   const key = `${keyboard}:${Math.round(vv.height)}:${Math.round(vv.offsetTop)}`;
   if (key !== vvApplied) {
+    if ((keyboard || wasKeyboard) && typeof noteChatLayoutChange === 'function') noteChatLayoutChange();
     vvApplied = key;
     document.body.style.height = keyboard ? Math.round(vv.height) + 'px' : '';
     document.body.style.transform = keyboard ? `translateY(${Math.max(0, Math.round(vv.offsetTop))}px)` : '';
@@ -108,7 +116,11 @@ function fitViewport() {
     const input = $('text');
     const overflow = Math.max(0, input.closest('footer').getBoundingClientRect().bottom - vv.height - Math.max(0, vv.offsetTop));
     const available = input.offsetHeight + $('listWrap').clientHeight - 72 - overflow;
-    document.body.style.setProperty('--composer-max-height', Math.max(52, Math.floor(Math.min(vv.height * .28, available))) + 'px');
+    const maxHeight = Math.max(52, Math.floor(Math.min(vv.height * .28, available))) + 'px';
+    if (document.body.style.getPropertyValue('--composer-max-height') !== maxHeight) {
+      if (typeof noteChatLayoutChange === 'function') noteChatLayoutChange();
+      document.body.style.setProperty('--composer-max-height', maxHeight);
+    }
     const room = input.closest('footer').getBoundingClientRect().top - document.querySelector('header').getBoundingClientRect().bottom
       - $('sessBar').offsetHeight - $('actionBar').offsetHeight - 16;
     document.body.style.setProperty('--question-max-height', Math.max(0, Math.floor(room)) + 'px');
@@ -116,7 +128,8 @@ function fitViewport() {
     document.body.style.removeProperty('--composer-max-height');
     document.body.style.removeProperty('--question-max-height');
   }
-  if (stickOnKeyboard) list.scrollTop = list.scrollHeight;
+  if (wasKeyboard && !keyboard && typeof endComposerEditing === 'function') endComposerEditing();
+  if (stickOnKeyboard && isFollowingBottom()) requestChatScroll();
 }
 window.addEventListener('resize', fitViewport);
 window.addEventListener('pageshow', fitViewport);
@@ -152,7 +165,7 @@ fitOrientation();
 // so a finished action cannot leave "正在…" on screen. A short result then fades on its own.
 const ACTION_PENDING = new Set([
   '正在加载对话…',
-  '正在发送…',
+  '正在发送…', '正在确认电脑端接收…',
   '正在新建对话…', '正在切换窗口…', '正在切换 Agent…', '正在读取 Agent 列表…', '正在打开子 Agent…', '返回主对话…',
   '正在切换终端…', '正在删除终端…', '正在新建终端…', '正在读取终端列表…',
   '正在打开项目…', '正在读取项目…', '正在读取文件夹…', '正在读取文档…', '正在保存…',
@@ -186,22 +199,33 @@ function finishPending(list) {
 }
 
 function send(obj) {
+  obj.sel ??= viewSel;
+  if (['attach', 'openAgent', 'openProject'].includes(obj.t)) beginNavigation(obj);
   if (obj.t === 'attach') {
     conn.loaded = false;
-    setWindowReady(false);
     status('正在切换窗口…');
     const name = {cursor: 'Cursor', devin: 'Devin', codex: 'Codex', fusion: 'Fusion'}[String(obj.id || '').split(':')[0]];
     if (name) $('titleText').textContent = name + '…';
   }
-  if (obj.t === 'openMenu') obj.requestId = ++menuRequest;
+  if (obj.t === 'openMenu') {
+    obj.requestId = ++menuRequest;
+    menuPending = { requestId: obj.requestId, kind: obj.kind, sel: viewSel };
+  }
+  if (obj.t === 'pickMenu' && (obj.kind === 'model' || obj.kind === 'effort')) {
+    clearSwitchWatch();
+    obj.requestId = ++menuPickRequest;
+    modelSwitchRequest = { requestId: obj.requestId, sel: viewSel };
+    status('切换中…');
+  }
   if (obj.t === 'docs') {
     obj.requestId = ++docsRequest;
     docsPending = { id: obj.requestId, sel: viewSel, computer: currentComputer()?.id || '' };
     editorBrowsing = obj.editor === true;
   }
   if (currentApp === 'codex' && ['settings', 'codexSetting', 'codexInstructions'].includes(obj.t)) obj.requestId = ++codexSettingsRequest;
-  if (ws && ws.readyState === 1 && authed) ws.send(JSON.stringify(obj));
-  else status('未连接', false);
+  if (ws && ws.readyState === 1 && authed) { ws.send(JSON.stringify(obj)); return true; }
+  status('未连接', false);
+  return false;
 }
 function setWindowReady(ready) {
   if (!ready && typeof cancelVoice === 'function') cancelVoice();
