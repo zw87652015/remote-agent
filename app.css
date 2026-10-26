@@ -12,6 +12,7 @@
   --ok-tint: rgba(74,222,155,.14); --warn-tint: rgba(251,191,77,.14); --err-tint: rgba(255,107,107,.14);
   --add: #4ADE9B; --del: #FF6B6B;
   --bubble: #262449; --bubble-fg: #EEEDFF;
+  --turn-highlight: rgba(251,191,77,.10);
   --code-bg: #202227; --pre-bg: #131417;
   --term-bg: #0B0C0E; --term-fg: #D9DADD; --term-mut: #8A8E96;
   --shadow-1: 0 1px 2px rgba(0,0,0,.4), 0 10px 30px rgba(0,0,0,.35);
@@ -43,6 +44,7 @@
   --ok-tint: rgba(18,132,79,.10); --warn-tint: rgba(161,92,0,.10); --err-tint: rgba(204,47,47,.10);
   --add: #12844F; --del: #CC2F2F;
   --bubble: #ECEAFF; --bubble-fg: #1C1840;
+  --turn-highlight: #FFF4D6;
   --code-bg: #ECECEF; --pre-bg: #F1F1EE;
   --term-bg: #faf9f6; --term-fg: #2e3436; --term-mut: #555753;
   --shadow-1: 0 1px 2px rgba(16,16,20,.06), 0 10px 30px rgba(16,16,20,.08);
@@ -423,7 +425,7 @@ main { flex: 1; min-height: 0; position: relative; }
 /* Short threads sit on the composer. The spacer shrinks away once the thread scrolls. */
 #list::before { content: ""; flex: 1 1 auto; min-height: 0; }
 #items.stale [data-action], #items.stale [data-request], #items.stale [data-btn] { pointer-events: none; opacity: .55; }
-#items > .msg { content-visibility: auto; contain-intrinsic-size: auto 72px; }
+#items > .msg { content-visibility: visible; }
 #older, #cachedMore {
   display: block; margin: 0 auto 10px; font-size: 13px; color: var(--fg-3);
   background: transparent; border: 1px solid var(--line-2); border-radius: 999px; padding: 6px 14px; min-height: 32px;
@@ -448,6 +450,11 @@ main { flex: 1; min-height: 0; position: relative; }
 .foldBtn { font-size: 11px; padding: 0 8px; min-height: 24px; background: transparent; border: 1px solid var(--line-2); border-radius: 999px; color: var(--fg-3); }
 .endFold { display: block; margin: 6px 0 0 auto; font-size: 11px; padding: 2px 10px; min-height: 24px; background: transparent; border: 1px solid var(--line-2); border-radius: 999px; color: var(--fg-3); }
 .flash { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 8px; }
+.msg.turnHighlight { background-color: var(--turn-highlight); animation: turnHighlightFade 1.8s ease-out; }
+@keyframes turnHighlightFade {
+  0%, 75% { background-color: var(--turn-highlight); }
+  100% { background-color: transparent; }
+}
 .turnSum { font-size: 11px; color: var(--fg-3); text-align: right; font-variant-numeric: tabular-nums; }
 .turnSum:empty { display: none; }
 .revertBtn { font-size: 11px; padding: 2px 8px; min-height: 24px; color: var(--fg-3); background: transparent; border: 1px solid var(--line-2); border-radius: 999px; }
@@ -782,6 +789,9 @@ body:not(.chatmode) #inputHistory, body:not(.term) #termHistory { display: none;
   #send { padding: 0 12px 0 14px; }
 }
 
+/* Idle drafts keep the tools visible while the text uses at most two lines. */
+body.composeIdle.chatmode #text { max-height: calc(2.9em + 12px); overflow-y: hidden; }
+
 /* Compact composer: the empty idle chat composer collapses to a one-line pill
    [#add][#text][#mic|#stop] so the conversation gets the vertical room back. */
 body.composeCompact.chatmode .composerBox {
@@ -847,6 +857,23 @@ body.kb #sessBar, body.kb #taskChip { display: none; }
 #sheet.open { transform: none; }
 #sheet::before { content: ""; display: block; width: 36px; height: 5px; border-radius: 999px; background: var(--line-3); margin: 4px auto 10px; }
 #sheet h3 { margin: 6px 4px 14px; font-size: 17px; color: var(--fg-hi); font-weight: 600; }
+.agentSheetTitle { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.agentSheetTitle h3 { flex: 1; min-width: 0; }
+.agentSessionFilter {
+  flex: none; position: relative; display: grid; grid-template-columns: repeat(2, 1fr);
+  width: 120px; padding: 3px; margin: 0 0 12px; border: 1px solid var(--line-2);
+  border-radius: 999px; background: var(--s2);
+}
+.agentSessionFilter::before {
+  content: ""; position: absolute; top: 3px; bottom: 3px; left: 3px; width: calc((100% - 6px) / 2);
+  border-radius: 999px; background: var(--accent-tint); transition: transform .18s var(--ease); pointer-events: none;
+}
+.agentSessionFilter.common::before { transform: translateX(100%); }
+.agentSessionFilter button {
+  position: relative; min-width: 0; min-height: 30px; padding: 4px 8px; border: 0;
+  border-radius: 999px; background: transparent; color: var(--fg-3); font-size: 12px;
+}
+.agentSessionFilter button[aria-pressed="true"] { color: var(--accent-text); font-weight: 600; }
 .opt {
   display: flex; align-items: center; gap: 12px; width: 100%; min-height: 52px;
   text-align: left; padding: 12px 16px; margin: 0 0 6px; white-space: normal;
@@ -879,6 +906,11 @@ div.opt.static, #sheet label.opt, a.opt { background: var(--s2); }
 .optRow { display: flex; gap: 6px; align-items: stretch; margin-bottom: 6px; }
 .optRow .opt { margin-bottom: 0; flex: 1; min-width: 0; }
 .optRow .archBtn { flex: none; width: 52px; padding: 0 6px; border-radius: var(--r-md); }
+.optRow .agentFavBtn, .optRow .agentMoreBtn {
+  flex: none; width: 38px; padding: 0 4px; border: 0; border-radius: var(--r-md);
+  background: var(--s1); color: var(--fg-3); font-size: 19px;
+}
+.optRow .agentFavBtn.on, .optRow .agentFavBtn:hover, .optRow .agentMoreBtn:hover { color: var(--accent-text); background: var(--accent-tint); }
 .paramBtn { flex: none; padding: 0 12px; font-size: 13px; border-radius: 999px; }
 .listTools { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
 .listTools .hint { margin: 0; }
@@ -889,6 +921,53 @@ button.fold .lbl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellip
 button.fold .tag { flex: none; }
 button.fold .chev { flex: none; color: var(--fg-4); font-size: 12px; }
 .foldBody { margin-left: 8px; }
+
+/* Project/session sheet: keep the existing actions and data, but present the
+   list with the same compact, layered treatment as the other sheets. */
+#sheet[data-kind="agents"] > button.opt[data-act] { min-height: 54px; }
+#sheet[data-kind="agents"] > button.opt[data-act]::after {
+  content: "›"; flex: none; color: var(--fg-3); font-size: 24px; line-height: 1;
+}
+#sheet[data-kind="agents"] .foldBody > button.fold {
+  min-height: 48px; margin-top: 12px; padding: 10px 12px; border: 1px solid var(--line);
+  border-bottom: 0; border-radius: 16px 16px 0 0; background: var(--s2); color: var(--fg-hi);
+  font-size: 15px;
+}
+#sheet[data-kind="agents"] .foldBody > button.fold .chev { order: -2; color: var(--fg-2); font-size: 18px; }
+#sheet[data-kind="agents"] .foldBody > button.fold::before {
+  content: ""; flex: none; width: 20px; height: 20px; background: var(--fg-hi);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 6.5h6l2 2h9v9a2 2 0 0 1-2 2h-15a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2z'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 6.5h6l2 2h9v9a2 2 0 0 1-2 2h-15a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2z'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+#sheet[data-kind="agents"] .foldBody > button.fold + .foldBody {
+  margin: 0; padding: 0 10px 4px; border: 1px solid var(--line); border-top: 0;
+  border-radius: 0 0 16px 16px; background: var(--s2);
+}
+#sheet[data-kind="agents"] .foldBody .optRow { gap: 0; margin: 0; border-bottom: 1px solid var(--line); }
+#sheet[data-kind="agents"] .foldBody .optRow:last-child { border-bottom: 0; }
+#sheet[data-kind="agents"] .foldBody .opt,
+#sheet[data-kind="agents"] .foldBody > .opt {
+  min-height: 50px; margin: 0; padding: 9px 8px; border-radius: 0; background: transparent;
+}
+#sheet[data-kind="agents"] .foldBody .opt.cur { background: var(--accent-tint); }
+#sheet[data-kind="agents"] .foldBody .archBtn {
+  width: 48px; min-height: 50px; padding: 0 6px; border-radius: 0; background: transparent;
+  color: var(--fg-3); font-size: 12px;
+}
+#sheet[data-kind="agents"] .foldBody .archBtn:hover { color: var(--accent-text); background: var(--accent-tint); }
+#sheet[data-kind="agents"] .foldBody .agentFavBtn,
+#sheet[data-kind="agents"] .foldBody .agentMoreBtn {
+  flex: none; width: 36px; min-height: 50px; padding: 0; border: 0; border-radius: 0;
+  background: transparent; color: var(--fg-3); font-size: 19px;
+}
+#sheet[data-kind="agents"] .foldBody .agentFavBtn.on,
+#sheet[data-kind="agents"] .foldBody .agentFavBtn:hover,
+#sheet[data-kind="agents"] .foldBody .agentMoreBtn:hover { color: var(--accent-text); background: var(--accent-tint); }
+#sheet[data-kind="agent-actions"] .opt { min-height: 52px; }
+.entryInviteContent { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
+.entryInviteQr { width: 128px; height: 128px; flex: none; image-rendering: pixelated; background: #fff; border-radius: 8px; }
+.entryInviteText { flex: 1; min-width: 0; }
+.entryInviteText textarea { margin: 0 0 8px; }
 .pRow { display: flex; flex-wrap: wrap; gap: 6px; }
 .pRow button { padding: 0 12px; min-height: 36px; font-size: 13.5px; }
 .pRow button.on { background: var(--accent); color: var(--accent-fg); }
@@ -1042,6 +1121,11 @@ body.term #stage { display: none; }
 .chatImagePreview .videoViewStage { height: 70dvh; display: flex; align-items: center; justify-content: center; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 #vBody .chatImagePreview img { width: auto; height: auto; max-width: 100%; max-height: 100%; margin: 0; pointer-events: none; }
 #vBody video { display: block; width: 100%; max-height: 100%; background: #000; }
+#vBody .pdfPager { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: center; gap: 16px; padding: 8px; background: var(--bg); border-bottom: 1px solid var(--line); }
+#vBody .pdfPager button { min-height: 36px; padding: 0 14px; }
+#vBody .pdfPager span { min-width: 64px; text-align: center; font-variant-numeric: tabular-nums; }
+#vBody .pdfPage { margin: 12px; }
+#vBody .pdfPage canvas { display: block; width: 100%; height: auto; background: #fff; }
 #vBody img { display: block; max-width: 100%; margin: 12px auto; background: var(--imgbg); }
 #vBody .note { padding: 30px 20px; color: var(--fg-3); text-align: center; line-height: 1.7; }
 #vBody .note.err { color: var(--err); }
@@ -1115,7 +1199,7 @@ body.fusion.kb #fusionWelcome h2 { font-size: 16px; margin-bottom: 4px; }
 #gate {
   position: fixed; inset: 0; z-index: 20; background: var(--bg); color: var(--fg);
   display: none; flex-direction: column; gap: 12px; overflow-y: auto;
-  padding: calc(60px + env(safe-area-inset-top)) 24px 24px;
+  padding: calc(22px + env(safe-area-inset-top)) 24px 24px;
 }
 #gate.open { display: flex; }
 #gate h2 { margin: 0 0 6px; font-size: 20px; color: var(--fg-hi); }
@@ -1127,7 +1211,9 @@ body.fusion.kb #fusionWelcome h2 { font-size: 16px; margin-bottom: 4px; }
 #gateLang { display: flex; align-items: center; gap: 12px; align-self: flex-end; color: var(--fg-4); }
 #gateLang button { background: none; border: 0; padding: 0; min-height: 0; font-size: 15px; color: var(--fg-3); }
 #gateLang button.active { color: var(--accent-text); font-weight: 700; }
-#gate .pairLogo { display: none; }
+#gateHeader { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 28px; }
+.gateBrand { display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 600; }
+.gateBrand img { width: 36px; height: 36px; border-radius: 10px; flex: none; }
 #gateEntry[hidden], #gatePaste[hidden], #pairOr[hidden], #gateScan[hidden], #gateHelp[hidden] { display: none; }
 .pairInput { display: flex; min-width: 0; }
 #gateInput { flex: 1; min-width: 0; }
@@ -1140,8 +1226,7 @@ body.fusion.kb #fusionWelcome h2 { font-size: 16px; margin-bottom: 4px; }
 #gate.pairing .pairHero { flex: 1 0 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; margin: 0; padding: clamp(6px, calc(var(--pair-height) * .1 - 48px), 32px) 0 clamp(6px, calc(var(--pair-height) * .01), 12px); }
 #gate.pairing .pairControls { display: flex; flex-direction: column; margin-top: auto; }
 #gate.pairing .pairControls > * { flex-shrink: 0; }
-#gate.pairing .pairLogo { display: block; width: min(40vw, clamp(56px, calc(var(--pair-height) * .32 - 100px), 176px)); height: auto; margin: 0 auto clamp(8px, calc(var(--pair-height) * .02), 20px); border-radius: 24px; box-shadow: 0 0 60px var(--accent-tint); }
-#gate.pairing h2 { font-size: clamp(22px, calc(var(--pair-height) * .038), 32px); line-height: 1.2; font-weight: 700; color: var(--fg-hi); margin: 0 0 clamp(6px, calc(var(--pair-height) * .012), 12px); }
+#gate.pairing h2 { font-size: 24px; line-height: 1.2; font-weight: 600; color: var(--fg-hi); margin: 0 0 clamp(6px, calc(var(--pair-height) * .012), 12px); }
 #pairIntro { margin: 0; color: var(--fg-3); font-size: 14px; line-height: 1.8; }
 #gate.pairing #gateMsg { font-size: 13px; margin: 0 0 12px; }
 #gate.pairing #gateMsg:empty { display: none; }
@@ -1194,18 +1279,50 @@ body.fusion.kb #fusionWelcome h2 { font-size: 16px; margin-bottom: 4px; }
 #scannerManual { position: relative; flex: none; border: 0; border-top: 1px solid #ffffff20; border-radius: 0; background: none; color: var(--accent-text); font-size: 15px; padding: 22px 0 0; }
 #scannerManual span { font-size: 22px; margin-left: 6px; vertical-align: -1px; }
 @media (min-width: 560px) and (max-height: 500px) {
-  #gate.pairing.open { display: grid; grid-template-columns: 1fr 1.2fr; grid-template-rows: repeat(7, auto); gap: 2px 24px; align-content: center; }
-  #gate.pairing #gateLang { grid-column: 1; grid-row: 1; justify-self: end; }
-  #gate.pairing .pairHero { grid-column: 1; grid-row: 2 / 5; align-self: center; margin: 0; padding: 0; }
+  #gate.pairing.open { display: grid; grid-template-columns: 1fr 1.2fr; grid-template-rows: repeat(8, auto); gap: 2px 24px; align-content: center; }
+  #gate.pairing #gateHeader { grid-column: 1 / -1; grid-row: 1; }
+  #gate.pairing .pairHero { grid-column: 1; grid-row: 2 / 6; align-self: center; margin: 0; padding: 0; }
   #gate.pairing .pairControls { display: contents; }
-  #gate.pairing #gateMsg { grid-column: 2; grid-row: 1; margin-bottom: 0; }
-  #gate.pairing #gateEntry { grid-column: 2; grid-row: 2; }
-  #gate.pairing #pairOr { grid-column: 2; grid-row: 3; margin-top: 0; margin-bottom: 0; }
-  #gate.pairing #gateScan { grid-column: 2; grid-row: 4; }
-  #gate.pairing #gateApp, #gate.pairing #gateActions { grid-column: 2; grid-row: 5; margin-top: 0; }
-  #gate.pairing #gateHelp { grid-column: 2; grid-row: 6; margin: 0; padding-top: 0; }
-  #gate.pairing #gateInfo { grid-column: 2; grid-row: 7; margin-top: 0; }
+  #gate.pairing #gateMsg { grid-column: 2; grid-row: 2; margin-bottom: 0; }
+  #gate.pairing #gateEntry { grid-column: 2; grid-row: 3; }
+  #gate.pairing #pairOr { grid-column: 2; grid-row: 4; margin-top: 0; margin-bottom: 0; }
+  #gate.pairing #gateScan { grid-column: 2; grid-row: 5; }
+  #gate.pairing #gateApp, #gate.pairing #gateActions { grid-column: 2; grid-row: 6; margin-top: 0; }
+  #gate.pairing #gateHelp { grid-column: 2; grid-row: 7; margin: 0; padding-top: 0; }
+  #gate.pairing #gateInfo { grid-column: 2; grid-row: 8; margin-top: 0; }
 }
+
+#gate.pairStatus {
+  --c-load: var(--accent); --c-load-dim: var(--accent-tint-2);
+  display: flex; height: auto; bottom: 0; gap: 0;
+  padding: calc(22px + env(safe-area-inset-top)) 24px max(24px, env(safe-area-inset-bottom)); background: var(--bg);
+}
+#gate.pairStatus:not(.open) { display: none; }
+#gate.pairStatus > * { width: 100%; max-width: 440px; margin-left: auto; margin-right: auto; flex-shrink: 0; }
+#gate.pairStatus #gateHeader { margin-bottom: 30px; }
+#gate.pairStatus .pairHero { flex: none; display: block; text-align: left; margin-bottom: 22px; padding: 0; }
+#gate.pairStatus h2 { margin: 0; font-size: 24px; font-weight: 600; line-height: 1.35; }
+#gateLead { margin: 6px 0 0; color: var(--fg-3); font-size: 13px; line-height: 1.6; }
+#gate.pairStatus .pairControls { display: flex; flex-direction: column; margin-top: 0; padding: 24px; border-radius: 24px; background: var(--s1); box-shadow: 0 8px 28px rgba(0,0,0,.025); }
+#gateStatus { text-align: center; }
+#gateStatusIcon { display: flex; align-items: center; justify-content: center; width: 48px; height: 48px; margin: 0 auto 16px; border-radius: 50%; background: var(--accent-tint); color: var(--accent-text); font-size: 24px; }
+#gateStatusIcon > svg, #gateStatusIcon .cIc, #gateStatusIcon .cIc svg { width: 22px; height: 22px; stroke: currentColor; }
+#gateStatusIcon .cIc { border: 0; }
+#gateStatusTitle { margin: 0; font-size: 17px; line-height: 1.5; font-weight: 600; color: var(--fg-hi); }
+#gateStatusDetail, #gateNote { margin: 12px 0 0; font-size: 13px; line-height: 1.65; color: var(--fg-3); text-align: center; }
+#gateCode { margin-top: 20px; padding: 12px 8px; border-radius: 14px; background: var(--accent-tint); font: 500 28px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace; letter-spacing: .15em; text-indent: .15em; color: var(--fg-hi); }
+#gate.pairStatus #gateMsg { margin: 18px 0 0; font-size: 13px; text-align: center; overflow-wrap: anywhere; }
+#gate.pairStatus #gateMsg:empty { display: none; }
+#gate.pairStatus #gateMsg.err { padding: 12px; border-radius: 12px; background: var(--err-tint); }
+#gate.pairStatus[data-pair-state="error"] #gateStatusIcon { color: var(--err); background: var(--err-tint); }
+#gateWaiting { display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 20px; font-size: 12px; color: var(--fg-3); }
+#gate.pairStatus #gateActions { margin-top: 22px; }
+#gate.pairStatus #gateActions button { min-height: 44px; font-size: 14px; }
+#gate.pairStatus[data-pair-state="paired"] #gateRetry { background: var(--accent); color: var(--accent-fg); }
+#gate.pairStatus #gateEntry { margin-top: 18px; padding: 0; background: none; }
+#gate.pairStatus #gateBtn, #gate.pairStatus #gateScan { min-height: 44px; height: 44px; font-size: 14px; font-weight: 500; }
+#gate.pairStatus #gateInfo { margin-top: 16px; text-align: center; }
+#gate.pairStatus #gateInfo:empty { display: none; }
 
 /* ---------- connection overlay ---------- */
 #conn {
@@ -1484,6 +1601,8 @@ button { transition: background-color .12s var(--ease), color .12s var(--ease), 
     opacity: 0; transform: translateY(4px);
   }
 }
+/* History controls change height immediately so a prepend needs only one position adjustment. */
+#older, #cachedMore, #historyStatus { transition: none; transform: none; }
 /* Status line under the composer hides via :has(), not [hidden]. */
 #footerStatus { transition: opacity .18s var(--ease), transform .18s var(--ease), display .18s allow-discrete; }
 #footerStatus:not(:has(#msg:not(:empty):not(.quiet), #elapsed:not([hidden]))) { opacity: 0; transform: translateY(4px); pointer-events: none; }
@@ -1504,8 +1623,21 @@ button { transition: background-color .12s var(--ease), color .12s var(--ease), 
 /* ---------- reduced motion ---------- */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; }
+  .msg.turnHighlight { animation: none; }
   .thinking.live .brain, .thinking.live .tht { animation: none; }
   .thinking.live .tht { background: none; color: var(--fg-3); }
   #queueBar .run i, #mic.on { animation: none; }
   #sheet { transition: none; }
 }
+
+/* Main menu hierarchy and vertically stacked Agent management. */
+#sheet .mainGroup { margin: 4px 0 10px; }
+#sheet .mainGroup > summary { display: flex; align-items: center; justify-content: space-between; min-height: 48px; padding: 8px 4px; font-weight: 600; cursor: pointer; list-style: none; }
+#sheet .mainGroup > summary::-webkit-details-marker { display: none; }
+#sheet .mainGroup > summary::after { content: '›'; color: var(--fg-3); }
+#sheet .mainGroup[open] > summary::after { transform: rotate(90deg); }
+#sheet .mainGroupBody > .mainGroup { margin-left: 10px; }
+#sheet .mainGroupBody > .mainGroup > summary { font-size: 14px; color: var(--fg-3); }
+#sheet .agentManageSection { display: block; margin: 20px 0; }
+#sheet .agentManageLogo { width: 28px; height: 28px; flex: none; }
+#sheet .agentManageRow input { width: 22px; height: 22px; flex: none; accent-color: var(--accent); }
