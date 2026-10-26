@@ -20,12 +20,13 @@ itemsEl.addEventListener('click', async e => {
   }
   const tr = e.target.closest('[data-ttoggle]');
   if (tr && !e.target.closest('[data-file]')) {
+    noteChatLayoutChange();
     const box = tr.closest('.toolrow');
     box.classList.add('anim');
     box.classList.toggle('open');
     const chev = tr.querySelector('.chev');
     if (chev) chev.textContent = box.classList.contains('open') ? '▾' : '▸';
-    if (pinnedBottom) { list.scrollTop = list.scrollHeight; requestAnimationFrame(() => { list.scrollTop = list.scrollHeight; }); }
+    if (isFollowingBottom()) requestChatScroll();
     return;
   }
   const b = e.target.closest('[data-think]');
@@ -33,6 +34,7 @@ itemsEl.addEventListener('click', async e => {
   const box = b.closest('.thinking');
   const body = box?.querySelector('.thb');
   const next = !box.classList.contains('open');
+  noteChatLayoutChange();
   thinkingPref.set(viewSel + '|' + b.dataset.think, next);
   box.classList.toggle('open', next);
   b.querySelector('.tha').textContent = next ? '收起' : '展开';
@@ -98,6 +100,14 @@ function thinkingWantOpen(it) {
   if (thinkingPref.has(key)) return thinkingPref.get(key);
   return true;
 }
+function readThinkingScroll(box) {
+  const state = box._thinkingScroll, top = box.scrollTop;
+  if (!box.hidden) {
+    if (top < state.top) state.follow = false;
+    else if (top > state.top && box.scrollHeight - box.clientHeight - top <= 1) state.follow = true;
+  }
+  state.top = top;
+}
 function paintThinking(el, it) {
   const open = thinkingWantOpen(it);
   el.classList.toggle('live', !!it.live);
@@ -112,12 +122,15 @@ function paintThinking(el, it) {
     el.innerHTML = `<button type="button" class="thbtn" data-think="">${it.src === 'devin' ? ICON.brain : ''}<span class="tht"></span><span class="tha"></span></button><div class="thb"></div>`;
     btn = el.querySelector('.thbtn');
     box = el.querySelector('.thb');
+    box._thinkingScroll = { follow: true, top: box.scrollTop };
+    box.addEventListener('scroll', () => readThinkingScroll(box), { passive: true });
   }
   btn.dataset.think = rest || more ? it.i : '';
   btn.dataset.more = more ? '1' : '';
   btn.querySelector('.tht').textContent = thinkingTitle(it.t);
   btn.querySelector('.tha').textContent = rest || more ? (open ? '收起' : '展开') : '';
-  const follow = open && it.live && box.scrollHeight - box.scrollTop - box.clientHeight < 48;
+  readThinkingScroll(box);
+  const follow = box._thinkingScroll.follow;
   const loading = more && thoughtFull.has(it.i) && full === undefined;
   const body = loading ? '加载中…' : more && full === null ? '内容未保存' : rest;
   box.classList.toggle('loading', loading);
@@ -125,6 +138,8 @@ function paintThinking(el, it) {
   box.hidden = !open;
   if (open && more && !thoughtFull.has(it.i)) thoughtObserver.observe(el);
   if (open && it.live && follow) box.scrollTop = box.scrollHeight;
+  // Scroll events arrive later; record our own positioning without changing follow state.
+  box._thinkingScroll.top = box.scrollTop;
 }
 
 // Rich tool rows (Devin transcript): icon + bold label + optional chips / duration /
@@ -189,10 +204,35 @@ function tasksHtml(it) {
   const list = (it.items || []).map(x => `<li class="${esc(x.status)}"><span class="ti">${TASK_ICON[x.status] || '○'}</span><span class="tt">${esc(x.t)}</span></li>`).join('');
   return `<div class="tprog"><i style="width:${pct}%"></i></div>` + (list ? `<ul class="tlist">${list}</ul>` : '');
 }
+const codexAutoRetryDone = new Map();
+function codexRetryKey(it) { return `${viewSel}|${it.btnItem || it.i}`; }
+function maybeAutoRetry(it) {
+  if (chatStale || !windowReady || currentApp !== 'codex' || !codexAutoRetryEnabled()) return;
+  const n = (it.b || []).findIndex(label => /^(Retry|Try(?: again)?|重试|再试一次)$/i.test(label));
+  if (n < 0) return;
+  const key = codexRetryKey(it), count = codexAutoRetryDone.get(key) || 0, max = codexAutoRetryCount();
+  if (count >= max) return;
+  codexAutoRetryDone.set(key, count + 1);
+  const sel = viewSel;
+  setTimeout(() => {
+    if (chatStale || !windowReady || currentApp !== 'codex' || viewSel !== sel || !codexAutoRetryEnabled()) return;
+    const current = it.btnItem === 'g' ? { b: lastChat?.global } : lastChat?.items?.find(row => codexRetryKey(row) === key);
+    if (current?.b?.[n] !== it.b[n] || (current.actions?.[n] || '') !== (it.actions?.[n] || '')) return;
+    send({ t: 'click', item: it.btnItem || it.i, n, actionId: it.actions?.[n] || '', label: it.b[n], sel });
+    status(`正在自动重试…（${count + 1}/${max}）`);
+  }, 0);
+}
 function renderItem(it) {
   const el = document.createElement('div');
   el.className = 'msg ' + it.k;
-  if (it.k === 'notice') { el.textContent = it.t; el.setAttribute('role', 'status'); el.classList.toggle('live', !!it.live); return el; }
+  if (it.k === 'notice') {
+    el.textContent = it.t;
+    el.setAttribute('role', 'status');
+    el.classList.toggle('live', !!it.live);
+    if (it.b?.length) el.insertAdjacentHTML('beforeend', `<div class="btns">${buttonsHtml(it.b, it.btnItem || it.i, it.actions)}</div>`);
+    if (it.b?.length) maybeAutoRetry(it);
+    return el;
+  }
   if (it.k === 'tasks') { el.innerHTML = `<details class="tcard" data-task="${esc(it.i)}" ${taskOpen.has(it.i) ? 'open' : ''}><summary class="tprog-head">${I18N.tr('任务')} ${it.done}/${it.total}</summary>${tasksHtml(it)}</details>`; return el; }
   if (it.k === 'human') {
     const mh = it.src === 'devin' ? mathHtml(it.t || '') : null;
@@ -205,8 +245,13 @@ function renderItem(it) {
   }
   // it.h comes from the whitelist sanitizer in server/page/common.js (clean): plain tags only, text escaped.
   else if (it.k === 'assistant') { el.copyText = it.t || ''; el.innerHTML = it.h || ''; dressMessage(el); }
-  else if (it.k === 'thinking') paintThinking(el, it);
+  else if (it.k === 'thinking') {
+    const lines = String(it.t || '').split('\n');
+    el.copyText = lines.length > 1 ? lines.slice(1).join('\n') : (it.t || '');
+    paintThinking(el, it);
+  }
   else if (it.k === 'tool') {
+    el.copyText = it.t || '';
     if (it.kind && (it.src === 'devin' || it.src === 'codex')) { renderTool(el, it); el.classList.add('toolrow'); if (it.kind !== 'command') el.classList.add('open'); }
     else {
       el.innerHTML = `<div class="txt">${esc(it.t || '')}</div>`;
@@ -230,14 +275,16 @@ function renderItem(it) {
     });
   }
   if (it.b && it.k !== 'human') el.insertAdjacentHTML('beforeend', `<div class="btns">${buttonsHtml(it.b, it.btnItem || it.i, it.actions)}</div>`);
+  if (it.b && it.k !== 'human') maybeAutoRetry(it);
   if (it.k !== 'human') addImageCopyButtons(el);
   return el;
 }
 
 const nearBottom = () => list.scrollHeight - list.scrollTop - list.clientHeight < 120;
 // Following the chat means the user is at the very end (or never left it); "close to the end" is still reading.
-const atBottom = () => list.scrollHeight - list.scrollTop - list.clientHeight < 8;
-const followingChat = () => pinnedBottom || atBottom();
+const BOTTOM_EPSILON = 2;
+const atBottom = () => list.scrollHeight - list.scrollTop - list.clientHeight <= BOTTOM_EPSILON;
+const followingChat = () => isFollowingBottom();
 
 // pickMenu has no completion message until the relay restarts, so clear "切换中…"
 // when the composer model/mode actually changes, or after a short fallback.
@@ -284,8 +331,7 @@ let activeGeneration = '';
 function withMessageTimes(chat) {
   if (!chat) return chat;
   const scope = messageScope();
-  const matches = (it, m) => it.k === 'human' && !m.before.has(it.i)
-    && echoTextMatches(it, m.text);
+  const matches = (it, m) => receiptMatchesHuman(it, m);
   const applies = m => m.scope === scope && (!m.thread || m.thread === chat.thread);
   const itemKey = it => generationKey(chat) + '|' + it.i;
   for (let index = 0; index < submittedMessages.length;) {
@@ -296,6 +342,8 @@ function withMessageTimes(chat) {
     const item = candidates.at(-Math.min(waiting, candidates.length));
     if (!item) { index++; continue; }
     messageTimes.set(itemKey(item), item.sentAt || receipt.sentAt);
+    const echo = pendingEchoes.find(row => row.requestId === receipt.requestId);
+    if (echo) echo.messageId = item.i;
     submittedMessages.splice(index, 1);
   }
   return { ...chat, items: chat.items.map(it => {
@@ -352,6 +400,7 @@ function paintSessions(chat) {
   const key = s?.key ? scKeyFor(s.key) : null;
   const changed = key !== curSessKey;
   if (changed) {
+    cancelChatMotion();
     curSessKey = key;
     thoughtObserver.disconnect();
     cache.clear();
@@ -360,7 +409,6 @@ function paintSessions(chat) {
     latestTasks = null;
     scSwitch(s?.key || null);
     itemsEl.replaceChildren();
-    list.scrollTop = list.scrollHeight;
   }
   const tabs = s?.tabs || [];
   for (const t of tabs) if (t.id) scSetTitle(scKeyFor(t.id), t.title);
