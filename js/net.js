@@ -49,13 +49,79 @@ function rememberConversation() {
   rememberComputer({ ...here, lastConversation: selection,
     previousConversation: last && (last.id !== selection.id || last.windowId !== selection.windowId) ? last : here.previousConversation });
 }
+function forgetClosedWindow(id) {
+  const here = currentComputer();
+  if (!here || !id) return;
+  const app = String(id).split(':')[0], selections = { ...here.selections };
+  const current = here?.win === id, selected = selections[app]?.id === id;
+  if (!current && !selected) return;
+  if (selected) delete selections[app];
+  delete selections[id];
+  const next = { ...here, selections };
+  if (current) { next.win = ''; next.windowId = ''; next.threadId = ''; }
+  if (current && next.lastConversation?.id === id) next.lastConversation = null;
+  rememberComputer(next);
+  if (current) store.set('window', null);
+}
+let liveChatSelection = '';
+let navigationSerial = 0, navigationPending = null, selectionReady = false, selectionMetadata = '';
+let metadataWindow = '';
+function beginNavigation(message) {
+  message.navigationId = ++navigationSerial;
+  navigationPending = { id: message.navigationId, windowId: message.t === 'attach' ? message.id : currentWindow, confirmed: '' };
+  conn.attachFailed = false;
+  conn.failedTargets?.delete(navigationPending.windowId);
+  $('retryChat').hidden = true;
+  selectionReady = false;
+  setWindowReady(false);
+  invalidateChatRender();
+  $('items').inert = true;
+  $('items').classList.add('stale');
+  $('actionBar').replaceChildren();
+  renderQuestions(null);
+}
+function selectionPreview() {
+  $('items').inert = true;
+  const preview = chatBySel.get(chatCacheKey(viewSel));
+  renderChat(preview ? { ...preview, readonly: true, busy: false, global: [], questions: null, queued: [], queuedCount: 0, subagents: [] } : null, !!preview, !preview);
+}
+function confirmNavigation() {
+  const previewed = navigationPending?.preview === viewSel;
+  if (navigationPending && !navigationPending.positioning) {
+    beginChatSelection();
+    navigationPending.positioning = true;
+  }
+  if (navigationPending) navigationPending.confirmed = viewSel;
+  if (mode === 'chat' && liveChatSelection !== viewSel && !previewed) {
+    selectionPreview();
+    if (navigationPending) navigationPending.preview = viewSel;
+  }
+  if (mode !== 'chat') { $('items').inert = false; setWindowReady(true); }
+}
+function refreshSelectionMetadata(initial = false) {
+  const key = `${connGen}|${viewSel}|${navigationSerial}`;
+  if (selectionMetadata === key) return;
+  selectionMetadata = key;
+  send({ t: 'usage', automatic: true });
+  const window = `${connGen}|${currentApp}|${currentComputer()?.windowId || ''}`;
+  if (metadataWindow !== window) {
+    metadataWindow = window;
+    if (!initial) send({ t: 'windows' });
+  }
+}
 function applySelection(m, clearChat = true) {
   if (m.app) { currentApp = m.app; capabilityOwner = m.app; agentCapabilities = m.capabilities || null; fusionSideCapabilities = m.sideCapabilities || {}; }
   const changed = (m.sel || '') !== viewSel;
   if (changed) { if (typeof cancelVoice === 'function') cancelVoice(); menuRequest++; saveDraft(); }
   // A new chat gets its thread id once it materializes: keep its pending echoes attached to it.
   if (changed && viewSel.endsWith('|') && (m.sel || '').startsWith(viewSel)) for (const p of pendingEchoes) if (p.sel === viewSel) p.sel = m.sel;
-  if (changed) { capabilityBlock = ''; viewSel = m.sel || ''; thoughtObserver.disconnect(); cache.clear(); $('sessionNotice').hidden = true; }
+  if (changed) {
+    invalidateChatRender();
+    selectionReady = false;
+    setWindowReady(false);
+    $('items').inert = true;
+    capabilityBlock = ''; viewSel = m.sel || ''; liveChatSelection = ''; beginChatSelection(); thoughtObserver.disconnect(); cache.clear(); $('sessionNotice').hidden = true;
+  }
   const here = currentComputer();
   const id = m.id || here?.win;
   const selection = { windowId: m.windowId ?? here?.windowId ?? '', threadId: m.threadId ?? here?.threadId ?? '' };
@@ -83,47 +149,71 @@ function discoveryUrl() {
   const page = new URL('url.json', location.href).href;
   return pending ? pending.discovery || page : currentComputer()?.discovery || page;
 }
+// Cross-origin navigation carries bookmarks only; authorization stays in each origin.
+function computerBookmarks(list) {
+  const bookmarks = new Map();
+  for (const c of list) {
+    try {
+      const discovery = new URL(c.discovery || new URL('url.json', location.href).href);
+      if (!/^[a-f0-9]{16}$/.test(c.id) || !/^https?:$/.test(discovery.protocol) || discovery.username || discovery.password) continue;
+      discovery.hash = ''; discovery.search = '';
+      bookmarks.set(c.id, { id: c.id, name: String(c.name || '电脑'), discovery: discovery.href });
+    } catch {}
+  }
+  return [...bookmarks.values()];
+}
+function loadComputerBookmarks() {
+  try { return computerBookmarks(JSON.parse(store.get('computer-links') || '[]')); } catch { return []; }
+}
 function computerLink(url, current = '') {
   const target = new URL(url);
   const params = new URLSearchParams(target.hash.slice(1));
-  params.set('computers', JSON.stringify(loadComputers().map(c => ({ ...c, discovery: c.discovery || new URL('url.json', location.href).href }))));
+  params.delete('computers');
+  params.delete('computer');
+  params.set('computer-links', JSON.stringify(computerBookmarks([...loadComputerBookmarks(), ...loadComputers()])));
   if (current) params.set('computer', current);
   target.hash = params.toString();
   return target.href;
 }
-async function resolveBase() {
-  if (info.self) return new URL(discoveryUrl()).origin;
-  const comp = currentComputer();
+function openComputerEntry(url, current = '') {
+  const link = computerLink(url, current);
+  if (inApp) return window.AgentRemoteApp.setUrl(link);
+  location.href = link;
+}
+async function resolveBase(data = info, comp = currentComputer(), current = () => true) {
+  if (data.self) return new URL(comp?.discovery || discoveryUrl()).origin;
   if (!comp?.key) throw Object.assign(new Error(''), { unpaired: true });
-  if (info.v === 2 && info.data) {
-    try { return await decryptEntry(comp.key, info); }
+  if (data.v === 2 && data.data) {
+    try { return await decryptEntry(comp.key, data); }
     catch { throw offline('这台电脑的地址对不上当前发布的记录，配对还在，可以换一台或稍后重试'); }
   }
-  if (info.v !== 3 || !Array.isArray(info.computers)) throw offline('电脑端还没有发布地址（或还在用旧版本），请在电脑上重启服务');
+  if (data.v !== 3 || !Array.isArray(data.computers)) throw offline('电脑端还没有发布地址（或还在用旧版本），请在电脑上重启服务');
   const id = comp.id || await computerIdFromKey(comp.key);
-  let entry = info.computers.find(c => c.id === id);
+  let entry = data.computers.find(c => c.id === id);
   if (!entry) {
-    for (const c of info.computers) {
+    for (const c of data.computers) {
       try {
         const url = await decryptEntry(comp.key, c);
-        rememberComputer({ ...comp, id: c.id, name: c.name || comp.name || '电脑' });
+        if (current()) rememberComputer({ ...currentComputer(), id: c.id, name: c.name || comp.name || '电脑' });
         return url;
       } catch {}
     }
     throw offline('这台电脑还没有发布地址，请在那台电脑上重启服务');
   }
-  if (!comp.id || (entry.name && entry.name !== comp.name)) rememberComputer({ ...comp, id: entry.id, name: entry.name || comp.name || '电脑' });
+  if (current() && (!comp.id || (entry.name && entry.name !== comp.name))) rememberComputer({ ...currentComputer(), id: entry.id, name: entry.name || comp.name || '电脑' });
   try { return await decryptEntry(comp.key, entry); }
   catch { throw offline('这台电脑的地址对不上当前发布的记录，配对还在，可以换一台或稍后重试'); }
 }
 
 async function api(path, opts = {}) {
   const { timeout = 10000, ...request } = opts;
-  const headers = { 'content-type': 'application/json', ...(store.get('token') ? { authorization: 'Bearer ' + store.get('token') } : {}), ...opts.headers };
+  const target = base;
+  const computer = pending ? loadComputers().find(c => pending.key ? c.key === pending.key : c.id === pending.id) : currentComputer();
+  const headers = { 'content-type': 'application/json', ...await entryHeaders(computer, opts.method || 'GET', path), ...opts.headers };
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), timeout);
   try {
-    return await fetch(base + path, { ...request, headers, signal: ctl.signal, cache: 'no-store' });
+    return await fetch(target + path, { ...request, headers, signal: ctl.signal, cache: 'no-store' });
   } finally {
     clearTimeout(timer);
   }
@@ -137,18 +227,17 @@ function parsePair(text) {
   const m = /[#&]pair=([\w-]{43})\.([\w-]{16,})/.exec(text || '');
   return m ? { key: m[1], code: m[2] } : null;
 }
+let entryComputer = '';
 {
   const params = new URLSearchParams(location.hash.slice(1));
-  if (params.has('computers')) {
-    const list = loadComputers();
+  if (params.has('computer-links') || params.has('computers') || params.has('computer')) {
     try {
-      for (const c of JSON.parse(params.get('computers'))) {
-        if (!c?.key || !c?.token) continue;
-        const i = list.findIndex(old => old.key === c.key);
-        if (i < 0) list.push(c); else list[i] = c;
-      }
-      saveComputers(list, params.get('computer') || currentComputer()?.key || '');
+      store.set('computer-links', JSON.stringify(computerBookmarks([...loadComputerBookmarks(), ...JSON.parse(params.get('computer-links') || '[]')])));
     } catch {}
+    entryComputer = params.get('computer') || '';
+    const selected = loadComputers().find(c => c.id === entryComputer);
+    if (selected) saveComputers(loadComputers(), selected.key);
+    params.delete('computer-links');
     params.delete('computers');
     params.delete('computer');
     history.replaceState(null, '', location.pathname + location.search + (params.size ? '#' + params.toString() : ''));
@@ -190,6 +279,7 @@ function showUnpaired(msg = '') {
   gate({
     msg,
     err: !!msg,
+    pairStatus: msg ? { state: 'error', title: '配对申请未完成' } : null,
     input: { placeholder: '输入配对链接或配对码', button: '连接', submit: pastePair, scan: true, inputMode: 'text' },
   });
 }
@@ -204,7 +294,7 @@ async function pastePair(text) {
         base = new URL(discovery).origin;
         const me = await fetch(base + '/api/me').then(r => r.json());
         if (me.id !== manual[1]) throw Error('配对码对应的电脑与当前入口不一致');
-        pending = { code: manual[2], discovery };
+        pending = { id: manual[1], code: manual[2], discovery };
         connGen++;
         authed = false;
         ws?.close();
@@ -229,10 +319,7 @@ async function pastePair(text) {
   let target;
   try { target = new URL(text.trim()); } catch {}
   if (target && /^https?:$/.test(target.protocol) && target.origin !== location.origin) {
-    const link = computerLink(target.href);
-    if (inApp) return window.AgentRemoteApp.setUrl(link);
-    location.href = link;
-    return;
+    return openComputerEntry(target.href);
   }
   if (target && /^https?:$/.test(target.protocol)) p.discovery = new URL('url.json', target).href;
   pending = p;
@@ -315,7 +402,8 @@ function publishedComputers() {
 }
 function unseenPublished() {
   const saved = loadComputers();
-  return publishedComputers().filter(p => !saved.some(c => c.id && c.id === p.id));
+  const entries = new Map([...publishedComputers(), ...loadComputerBookmarks()].map(p => [p.id, p]));
+  return [...entries.values()].filter(p => !saved.some(c => c.id && c.id === p.id));
 }
 function offerComputers(msg, { err = true, repair = false } = {}) {
   const many = loadComputers().length > 1 || unseenPublished().length > 0;
@@ -338,20 +426,26 @@ async function showOffline(failure = { stage: '应用连接', error: '' }) {
 }
 
 async function pair(totp) {
-  gate({ msg: '正在配对…' });
+  gate({ pairStatus: { state: 'loading', title: '正在配对…' } });
   let r, body;
   try {
-    r = await post('/api/pair', { code: pending.code, name: deviceName(), totp });
+    const { publicKey } = await entryKey();
+    r = await post('/api/pair', { code: pending.code, name: entryName(), publicKey, totp });
     body = await r.json().catch(() => ({}));
-  } catch {
-    return showOffline();
+  } catch (error) {
+    return showUnpaired(error.message);
   }
   if (r.ok) {
+    if (body.pending) {
+      Object.assign(pending, { key: body.key, requestId: body.id, secret: body.secret, code: body.code, expires: body.expires, desktop: true });
+      sessionStorage.setItem('entry-request', JSON.stringify(pending));
+      return joinEntryRequest();
+    }
     return finishPair(body);
   }
   if (body.needTotp) return showTotp(code => pair(code), body.error);
   pending = null;
-  if (store.get('token')) return gate({ msg: (body.error || '配对失败') + '\n\n这台设备之前已经配对过，可以继续使用。', err: true, retry: '继续使用' });
+  if (store.get('token')) return gate({ msg: body.error || '配对失败', err: true, retry: '继续使用', pairStatus: { state: 'paired', title: '此入口已有配对记录', note: '这台设备之前已经配对过，可以继续使用。' } });
   showUnpaired(body.error || '配对失败');
 }
 
@@ -363,6 +457,7 @@ async function finishPair(body) {
   list.push({ ...prev, id, name: body.name || prev?.name || '电脑', key, token: body.token, device: body.device || prev?.device || '', win: prev?.win || '', discovery: discoveryUrl(), relay: base });
   saveComputers(list, key);
   pending = null;
+  entryComputer = '';
   sessionStorage.removeItem('entry-request');
   return connect();
 }
@@ -378,8 +473,9 @@ async function joinEntryRequest() {
   };
   try {
     if (!request.requestId) {
-      gate({ msg: '正在申请入口授权…' });
-      const r = await post('/api/entries/join', { invitation: request.invitation, name: entryName() });
+      gate({ pairStatus: { state: 'loading', title: '正在申请入口授权…' } });
+      const { publicKey } = await entryKey();
+      const r = await post('/api/entries/join', { invitation: request.invitation, name: entryName(), publicKey });
       const body = await r.json();
       if (!r.ok) { terminal = true; throw new Error(body.error || '申请失败'); }
       if (generation !== entryJoinGeneration || pending !== request) return;
@@ -387,20 +483,20 @@ async function joinEntryRequest() {
       delete request.invitation;
       sessionStorage.setItem('entry-request', JSON.stringify(request));
     }
-    gate({ msg: `授权验证码：${request.code}\n请在已配对入口的「已配对设备」中核对验证码并同意。`, retry: '取消申请', onRetry: cancel });
+    gate({ msg: request.desktop ? '请在电脑配对窗口核对验证码，然后点击「允许连接」。' : '请在已配对入口的「已配对设备」中核对验证码并同意。', pairStatus: { state: 'waiting', title: request.desktop ? '等待电脑批准' : '等待入口批准', detail: '请核对两端的验证码', code: request.code }, retry: '取消申请', onRetry: cancel });
     while (generation === entryJoinGeneration && pending === request) {
-      if (Date.now() >= request.expires) { terminal = true; throw new Error('授权请求已过期，请重新生成链接'); }
       const r = await post('/api/entries/status', { id: request.requestId, secret: request.secret });
       const body = await r.json();
       if (generation !== entryJoinGeneration || pending !== request) return;
       if (!r.ok) { terminal = true; throw new Error(body.error || '授权查询失败'); }
       if (body.state === 'approved') return finishPair(body);
-      if (body.state === 'denied') { terminal = true; throw new Error('已配对入口拒绝了本次申请'); }
+      if (body.state === 'denied') { terminal = true; throw new Error('本次入口申请已被拒绝'); }
+      if (Date.now() >= request.expires) { terminal = true; throw new Error('授权请求已过期，请重新生成链接'); }
       await new Promise(resolve => setTimeout(resolve, 2000));
     }
   } catch (error) {
     if (generation !== entryJoinGeneration || pending !== request) return;
-    if (!terminal && request.requestId) return gate({ msg: '暂时无法查询授权，申请已保留，请重试。', err: true, retry: true, repair: true });
+    if (!terminal && request.requestId) return gate({ msg: '暂时无法查询授权，申请已保留，请重试。', err: true, retry: true, repair: true, pairStatus: { state: 'error', title: '配对申请未完成' } });
     sessionStorage.removeItem('entry-request'); pending = null;
     showUnpaired(error.message);
   }
@@ -418,8 +514,20 @@ async function verifyTotp(code) {
   }
 }
 
+let bootGeneration = 0;
 async function boot() {
+  const generation = ++bootGeneration;
+  connGen++;
   offlineGen++;
+  const old = ws;
+  if (authed) {
+    markUploadsDisconnected();
+    failPendingSends('连接已断开，消息未发送，请重试');
+    failFileSave('连接已断开，保存结果未确认，请重试');
+  }
+  ws = null;
+  try { old?.close(); } catch {}
+  clearInterval(pingTimer);
   authed = false;
   clearTimeout(retryTimer);
   // Android browser opened a pairing link: offer to hand it to the installed app instead.
@@ -435,29 +543,55 @@ async function boot() {
     if (saved) saveComputers(loadComputers(), saved.key);
   }
   if (!pending && currentComputer()) connShow('正在查找电脑…');
+  const chosen = currentComputer();
+  const current = () => generation === bootGeneration && currentComputer()?.key === chosen?.key;
+  const discovery = fetch(discoveryUrl() + '?t=' + Date.now(), { cache: 'no-store', signal: AbortSignal.timeout(10000) }).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
+  // An existing paired address can authenticate while the published directory refreshes.
+  if (!pending && chosen?.relay && (!entryComputer || entryComputer === chosen.id)) {
+    base = chosen.relay;
+    discovery.then(async data => {
+      const relay = await resolveBase(data, chosen, current);
+      if (!current()) return;
+      info = data;
+      rememberComputer({ ...currentComputer(), relay });
+      if (!authed && ws?.readyState === 3 && base !== relay) { base = relay; connect(); }
+    }).catch(() => {});
+    if (chosen.win) store.set('window', chosen.win);
+    await chatPreviewReady;
+    if (current()) connect();
+    return;
+  }
   try {
-    info = await fetch(discoveryUrl() + '?t=' + Date.now(), { cache: 'no-store', signal: AbortSignal.timeout(10000) }).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
+    const data = await discovery;
+    if (!current()) return;
+    info = data;
   } catch (error) {
+    if (!current()) return;
     base = currentComputer()?.relay || '';
     return showOffline({ stage: '页面地址读取', error: error.message });
   }
   if (pending) {
-    try { base = await resolvePending(); }
-    catch (e) { return showUnpaired(e.message || '这台电脑还没有发布地址'); }
+    try { const relay = await resolvePending(); if (!current()) return; base = relay; }
+    catch (e) { if (current()) return showUnpaired(e.message || '这台电脑还没有发布地址'); return; }
     return pending.invitation || pending.requestId ? joinEntryRequest() : pair();
   }
+  if (entryComputer && !loadComputers().some(c => c.id === entryComputer)) {
+    return showComputers('当前入口尚未配对这台电脑，请使用配对链接或由已配对入口添加授权。');
+  }
   try {
-    base = await resolveBase();
+    const relay = await resolveBase(info, chosen, current);
+    if (!current()) return;
+    base = relay;
   } catch (e) {
+    if (!current()) return;
     if (!loadComputers().length) return e.unpaired ? showUnpaired(e.message) : gate({ msg: e.message, err: true, retry: true, repair: true });
     return showOffline({ stage: '地址发现', error: e.message });
   }
   if (!currentComputer()) return loadComputers().length ? offerComputers('选择要连接的电脑', { err: false }) : showUnpaired();
-  const chosen = currentComputer();
-  rememberComputer({ ...chosen, relay: base });
+  rememberComputer({ ...currentComputer(), relay: base });
   if (chosen?.win) store.set('window', chosen.win);
   await chatPreviewReady;
-  connect();
+  if (current()) connect();
 }
 
 async function resolvePending() {
@@ -482,7 +616,7 @@ let retryTimer = null, pingTimer = null, lastRx = 0;
 function heartbeat() {
   if (!authed || !ws || ws.readyState !== 1) return;
   if (Date.now() - lastRx > 45000) return closeSocket(ws);
-  if (Date.now() - lastRx > 20000) ws.send(JSON.stringify({ t: 'ping' }));
+  ws.send(JSON.stringify({ t: 'ping', visible: document.visibilityState === 'visible' }));
 }
 // close() waits for the peer's close frame, which a dead path never sends — the
 // socket then sits in CLOSING and onclose never fires. Force the cleanup.
@@ -501,19 +635,35 @@ function autoRetry() {
 }
 
 async function connect() {
+  const gen = ++connGen, attempt = bootGeneration;
   resetLatency();
+  liveChatSelection = '';
+  navigationPending = null;
+  selectionReady = false;
+  selectionMetadata = metadataWindow = '';
   const computer = currentComputer();
   const expectedId = computer.id || await computerIdFromKey(computer.key);
+  if (gen !== connGen || attempt !== bootGeneration || computer.key !== currentComputer()?.key) return;
+  offlineGen++;
   draftEpoch = '';
+  draftRevision = draftAckRevision = 0;
+  if (text.value || drafts.has(activeDraft)) draftRevision++;
   setWindowReady(false);
   clearTimeout(retryTimer);
   if (conn.active || $('gate').classList.contains('open')) connShow('正在建立实时连接…');
-  const gen = ++connGen;
+  const previous = ws;
+  try { previous?.close(); } catch {}
   ws = new WebSocket(base.replace(/^http/, 'ws') + '/ws');
   let opened = false;
   const socket = ws;
   const connectTimer = setTimeout(() => { if (gen === connGen && !authed) closeSocket(socket); }, 10000);
-  ws.onopen = () => { opened = true; socket.send(JSON.stringify({ t: 'auth', token: store.get('token') })); };
+  ws.onopen = async () => {
+    opened = true;
+    try {
+      const proof = await entryProof(computer, 'WS /ws');
+      if (gen === connGen && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ t: 'auth', token: computer.token, proof }));
+    } catch (error) { if (gen !== connGen) return; rejected = true; socket.close(); showUnpaired(error.message); }
+  };
   let rejected = false;
   ws.onclose = async event => {
     clearTimeout(connectTimer);
@@ -521,12 +671,16 @@ async function connect() {
     resetLatency();
     setWindowReady(false);
     markUploadsDisconnected();
+    failPendingSends('连接已断开，消息未发送，请重试');
+    failFileSave('连接已断开，保存结果未确认，请重试');
     qnPending = null;
     qnSig = '';
     renderQuestions(null);
     $('dot').className = '';
     if (!authed) {
       if (rejected) return;
+      const relay = currentComputer()?.relay;
+      if (relay && relay !== base) { base = relay; return connect(); }
       return showOffline({ stage: opened ? '实时连接认证' : '实时连接建立', error: 'WebSocket 关闭码 ' + event.code });
     }
     authed = false;
@@ -535,11 +689,14 @@ async function connect() {
     status('断开，重连中…', false);
     await sleep(Math.min(8000, 800 * failures));
     // Rediscover the address using the saved computer identity and device token.
-    boot();
+    if (gen === connGen && attempt === bootGeneration) boot();
   };
   ws.onmessage = ev => {
+    if (gen !== connGen) return;
     const m = JSON.parse(ev.data);
     lastRx = Date.now();
+    if (['attached', 'thread', 'chat', 'projectReady', 'attachFailed', 'status'].includes(m.t)
+        && m.navigationId != null && m.navigationId !== navigationSerial) return;
     if (m.t === 'pong') return;
     if (m.t === 'auth') {
       clearTimeout(connectTimer);
@@ -552,6 +709,7 @@ async function connect() {
       }
       rememberComputer({...currentComputer(), id: m.id, name: m.name, device: m.device});
       authed = true; failures = 0;
+      send({ t: 'sessionLibrary', entries: legacyAgentLibrary() });
       document.dispatchEvent(new Event('voice-authenticated'));
       ungate();
       connHostOk();
@@ -577,12 +735,13 @@ async function connect() {
     else if (m.t === 'sent') {
       confirmSent(m);
     }
+    else if (m.t === 'queueDone') receiveQueueDone(m);
     else if (m.t === 'clickDone') {
       if (m.sel !== viewSel) return;
       const button = [...$('items').querySelectorAll('button[data-item]')].find(b => b.dataset.item === String(m.item) && b.dataset.actionId === (m.actionId || ''));
       button?.closest('.btns')?.querySelectorAll('button').forEach(b => { b.disabled = false; });
     }
-    else if (m.t === 'sendFailed') { pendingSends.delete(m.requestId); if (pendingEchoes.some(p => p.requestId === m.requestId)) { pendingEchoes = pendingEchoes.filter(p => p.requestId !== m.requestId); queueChatRender(); } }
+    else if (m.t === 'sendFailed') failPendingSend(m.requestId, m.message || '发送失败，请重试');
     else if (m.t === 'questionDone') finishQuestion(m);
     else if (m.t === 'latency') receiveLatency(m);
     else if (m.t === 'visual') renderVisualState(m);
@@ -592,6 +751,19 @@ async function connect() {
     else if (m.t === 'attachments') { if (m.sel === viewSel) renderAttachments(m.list); }
     else if (m.t === 'chat') {
       if (!m.sel || !viewSel || m.sel === viewSel) {
+        if (navigationPending && (m.navigationId !== navigationPending.id || navigationPending.confirmed !== viewSel)) return;
+        if (m.cached && liveChatSelection === (m.sel || viewSel)) return;
+        const fresh = m.chat && !m.cached && selectionReady;
+        if (fresh) {
+          const becameReady = !windowReady;
+          if (navigationPending?.preview === viewSel && chatStale) for (const item of m.chat.items) if (item.b?.length) cache.delete(item.i);
+          liveChatSelection = m.sel || viewSel;
+          navigationPending = null;
+          $('retryChat').hidden = true;
+          $('items').inert = false;
+          setWindowReady(true);
+          if (becameReady) queueDraftSync();
+        }
         if (m.chat && !m.cached && !m.chat.readonly) capabilityBlock = '';
         const preview = chatBySel.get(chatCacheKey(m.sel || viewSel));
         // Codex unmounts the transcript while its generated-image editor is open.
@@ -600,17 +772,23 @@ async function connect() {
         const chat = retain ? { ...preview, ...m.chat, items: preview.items } : m.chat;
         if (chat) cacheChat(m.sel || viewSel, chat);
         queueChatRender(chat, !!m.cached || obscured, m.sel);
+        if (fresh) {
+          const selection = viewSel, navigation = navigationSerial;
+          requestAnimationFrame(() => { if (windowReady && viewSel === selection && navigationSerial === navigation) refreshSelectionMetadata(); });
+        }
       }
     }
-    else if (m.t === 'draft') { if (!questionCompose && (m.draftEpoch || '') === draftEpoch && (!m.sel || m.sel === viewSel)) { if ((text.value === '' || text.value === mirroredDraft) && m.text !== text.value) { text.value = m.text; autosize(); } mirroredDraft = m.text; } }
-    else if (m.t === 'draftAck') { if ((m.draftEpoch || '') === draftEpoch && m.ok && (!m.sel || m.sel === viewSel) && text.value === m.text) mirroredDraft = m.text; }
+    else if (m.t === 'draft') receiveDraft(m);
+    else if (m.t === 'draftAck') receiveDraft(m);
+    else if (m.t === 'historyPage') receiveHistoryPage(m);
     else if (m.t === 'historyDone') finishHistory(m);
     else if (m.t === 'thread') applySelection(m);
     else if (m.t === 'frame') onFrame(m);
     else if (m.t === 'panel') { panel = m.rect; updateTermEmpty(); layoutStage(); applyQuality(); }
-    else if (m.t === 'connAgents') connAgentResults(m.agents);
+    else if (m.t === 'connAgents') connAgentResults(m.agents, m.complete !== false);
+    else if (m.t === 'agentCatalog') agentCatalogResults(m.agents);
     else if (m.t === 'launchResult') connLaunchResults(m.results);
-    else if (m.t === 'windows') { windows = m.list; currentWindow = m.current; connWindows(m.list); if (m.plans) { appPlans = { ...appPlans, ...m.plans }; updateTitle(); } if (conn.readyPending) { conn.readyPending = false; ensureReadyAgent(); } if (sheetKind === 'windows') showWindows(); paintRail(); }
+    else if (m.t === 'windows') { windows = m.list; currentWindow = m.current; connWindows(m.list); if (m.plans) { appPlans = { ...appPlans, ...m.plans }; updateTitle(); } if (sheetKind === 'windows') showWindows(); paintRail(); }
     else if (m.t === 'plans') { if (m.plans) { appPlans = { ...appPlans, ...m.plans }; updateTitle(); if (sheetKind === 'windows') showWindows(); paintRail(); } }
     else if (m.t === 'fusionTrust') openSheet('fusion-trust', `<h3>确认项目可信</h3><div class="hint">${esc(m.path)}</div><button class="opt" data-fusion-trust="yes"><span class="lbl">信任并创建会话</span></button><button class="opt" data-fusion-trust="no"><span class="lbl">取消</span></button>`);
     else if (m.t === 'fusionProjects') showFusionProjects(m);
@@ -623,16 +801,30 @@ async function connect() {
       finishPending(['正在读取额度…']);
     }
     else if (m.t === 'attached') {
-      if (m.closed) { setWindowReady(m.ready === true); status('这个窗口已经关闭，请重新选择', false); send({ t: 'windows' }); if (m.initial) { connHide(); showWindows(); } return; }
+      if (m.closed) {
+        forgetClosedWindow(m.id);
+        selectionReady = m.ready === true;
+        connReadFailed('这个窗口已经关闭，请重试或切换 Agent');
+        send({ t: 'windows' });
+        if (conn.active) connRender();
+        return;
+      }
       if (m.plans) appPlans = { ...appPlans, ...m.plans };
       rememberAgentOpen(m);
-      if (m.keepQuota) { applySelection(m); setWindowReady(true); return; }
+      if (m.keepQuota) {
+        applySelection(m, false);
+        selectionReady = m.ready !== false;
+        if (selectionReady) confirmNavigation();
+        else { setWindowReady(false); renderChat(null, false, true); }
+        return;
+      }
       finishPending(['正在切换窗口…', '正在切换 Agent…']);
       store.set('window', m.id);
       applySelection(m, false);
       currentWindow = m.id;
       currentApp = m.app || null;
-      setWindowReady(true);
+      selectionReady = m.ready !== false;
+      setWindowReady(selectionReady && mode !== 'chat');
       scheduleLatency();
       $('dot').className = 'ok';
       status(mode === 'chat' ? '正在加载对话…' : '已连接');
@@ -640,17 +832,25 @@ async function connect() {
       currentAppName = m.appName;
       currentProject = m.app === 'fusion' ? '' : (m.project || winLabel(m.title).name);
       updateAppText(); updateTitle();
-      renderChat(null, false, true);
-      if (m.initial && m.app === 'codex') connContentReady();
+      if (selectionReady) confirmNavigation();
+      else renderChat(null, false, true);
       renderContext(null);
       $('quotaMeters').innerHTML = '';
       $('quotaMeters').title = '';
       renderQuota(quotaCache.get(quotaKey()) || { missing: true, quota: [], limits: [] });
-      send({ t: 'usage', automatic: true });
       send({ t: 'appTheme', dark: document.documentElement.dataset.theme !== 'light' });
-      if (!m.initial) send({ t: 'windows' });
+      if (m.initial) metadataWindow = `${connGen}|${currentApp}|${m.windowId || ''}`;
+      if (mode !== 'chat' && selectionReady) refreshSelectionMetadata(m.initial === true);
     }
-    else if (m.t === 'attachFailed') setWindowReady(m.ready);
+    else if (m.t === 'attachFailed') {
+      selectionReady = m.ready === true;
+      connReadFailed(m.message || '当前会话读取失败，请重试或切换 Agent');
+    }
+    else if (m.t === 'sessionLibrary') receiveSessionLibrary(m);
+    else if (m.t === 'sessionChanged') receiveSessionChange(m);
+    else if (m.t === 'sessionActions') receiveAgentActions(m);
+    else if (m.t === 'sessionBatchProgress') receiveSessionBatch(m);
+    else if (m.t === 'projectWindows') showProjectWindows(m);
     else if (m.t === 'agents') receiveAgents(m);
     else if (m.t === 'codexArchived') {
       const conv = String(m.id || '').split(':').slice(2).join(':');
@@ -679,16 +879,25 @@ async function connect() {
     }
     else if (m.t === 'projectReady') {
       if (m.sel && m.sel !== viewSel) return;
+      selectionReady = true;
+      confirmNavigation();
       const refreshEditor = editorBrowsing && sheetKind === 'docs';
       capabilityBlock = '';
       finishPending(['正在打开项目…', '正在新建对话…']);
       closeSheet(); currentProject = m.name;
-      if (m.chat) renderChat(m.chat);
+      if (m.chat) {
+        liveChatSelection = viewSel;
+        navigationPending = null;
+        $('items').inert = false;
+        setWindowReady(true);
+        cacheChat(viewSel, m.chat);
+        renderChat(m.chat);
+        refreshSelectionMetadata();
+      }
       $('titleProject').textContent = m.name;
       $('sessionNotice').hidden = !m.newSession;
       $('sessionNotice').textContent = I18N.tr('会话创建成功，尚未发送消息。') + ' ' + m.name;
       status(m.newSession ? '已在所选项目新建会话' : '已打开项目');
-      send({ t: 'agents', automatic: true, silent: true });
       if (refreshEditor) startEditor();
     }
     else if (m.t === 'docs') showDocs(m);
@@ -716,9 +925,11 @@ async function connect() {
       });
       finishPending(['设置中…', '正在修改…']);
     }
+    else if (m.t === 'menuPicked') finishModelPick(m);
     else if (m.t === 'menu') {
       if (m.sel && viewSel && m.sel !== viewSel) return;
-      if (m.requestId != null && m.requestId !== menuRequest) return;
+      if (m.requestId != null && (m.requestId !== menuRequest || m.requestId !== menuPending?.requestId
+        || m.kind !== menuPending.kind || menuPending.sel !== viewSel)) return;
       lruPut(menuCache, menuCacheKey(m.kind), m, 24);
       if (currentApp === 'fusion' && /^fusion-(model|effort)-[ab]$/.test(m.kind) && fusionModelSide === m.kind.slice(-1)) {
         showMenu(m.kind, m.items, m.max, m.fusion, m.fast, m.model, false, m.pricing);
@@ -729,15 +940,16 @@ async function connect() {
     }
     else if (m.t === 'params') showParams(m);
     else if (m.t === 'changes') showChanges(m);
-    else if (m.t === 'file') showFile(m);
+    else if (m.t === 'file') { if (m.requestId === fileRequestId) showFile(m); }
     else if (m.t === 'fileMarks') {
-      if (viewing && viewing.path === m.path && String(viewing.host || '') === String(m.host || '')) {
+      if (m.requestId === fileRequestId && viewing && viewing.path === m.path && String(viewing.host || '') === String(m.host || '')) {
         viewing.marks = m.marks || null;
         viewing.markSource = m.markSource;
         viewing.commit = m.commit;
         viewing.subject = m.subject;
         if (m.newFile) viewing.newFile = true;
         if (m.diff) viewing.diff = m.diff;
+        if (editing) return;
         const body = $('vBody'), y = body.scrollTop;
         renderFileCode(viewing);
         body.scrollTop = y;
