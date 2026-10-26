@@ -1,10 +1,22 @@
 /* ---------- gate: pairing / 2FA / offline ---------- */
 let gateSubmit = null;
 let gateRetryFn = null;
-function gate({ msg = '', err = false, input = null, retry = false, repair = false, computers = false, appLink = null, onRetry = null } = {}) {
+function gate({ msg = '', err = false, input = null, retry = false, repair = false, computers = false, appLink = null, onRetry = null, pairStatus = null } = {}) {
   connHide();
   $('gate').classList.add('open');
   $('gate').classList.toggle('pairing', !!input?.scan);
+  $('gate').classList.toggle('pairStatus', !!pairStatus);
+  $('gate').dataset.pairState = pairStatus?.state || '';
+  $('gateStatus').hidden = $('gateLead').hidden = !pairStatus;
+  $('gateStatusTitle').textContent = pairStatus?.title || '';
+  $('gateStatusIcon').innerHTML = !pairStatus ? '' : pairStatus.state === 'loading' ? CONN_ICON.load : pairStatus.state === 'waiting' ? CONN_HOST_SVG : pairStatus.state === 'paired' ? CONN_ICON.ok : '!';
+  $('gateStatusDetail').textContent = pairStatus?.detail || '';
+  $('gateStatusDetail').hidden = !pairStatus?.detail;
+  $('gateCode').textContent = pairStatus?.code || '';
+  $('gateCode').hidden = !pairStatus?.code;
+  $('gateNote').textContent = pairStatus?.note || '';
+  $('gateNote').hidden = !pairStatus?.note;
+  $('gateWaiting').hidden = pairStatus?.state !== 'waiting';
   $('gateMsg').textContent = msg;
   $('gateMsg').className = err ? 'err' : '';
   const inp = $('gateInput');
@@ -45,7 +57,7 @@ $('gatePaste').onclick = async () => {
   try { $('gateInput').value = (await navigator.clipboard.readText()).trim(); $('gateInput').focus(); }
   catch { $('gateMsg').textContent = I18N.tr('无法读取剪贴板，请长按输入框粘贴'); }
 };
-$('gateHelp').onclick = () => openSheet('pair-help', '<h3>配对遇到问题？</h3><p>在电脑端运行 npm run pair，使用新生成的二维码、链接或完整手动配对码。</p><p>配对码 10 分钟内有效，只能授权一台新设备。请使用终端显示的固定网页入口。</p>');
+$('gateHelp').onclick = () => openSheet('pair-help', '<h3>配对遇到问题？</h3><p>在电脑端运行 npm run pair，使用新生成的二维码、链接或完整手动配对码。</p><p>配对码 3 分钟内可重复申请，每个入口都需在电脑配对窗口批准。</p>');
 $('gateRetry').onclick = () => { if (gateRetryFn) gateRetryFn(); else boot(); };
 $('gateComputers').onclick = () => showComputers();
 let connGen = 0;
@@ -124,7 +136,7 @@ function connHide() {
 }
 function connShow(phase) {
   clearTimeout(conn.timer);
-  Object.assign(conn, { active: true, host: false, phase, agents: null, loaded: false, enterRequested: false, failure: null, conclusion: '', checks: [], diagRunning: false, readyRedirect: false, readyPending: false });
+  Object.assign(conn, { active: true, host: false, phase, agents: null, catalogReady: false, autoLaunched: false, loaded: false, attachFailed: false, enterRequested: false, failure: null, conclusion: '', checks: [], diagRunning: false, probeComplete: false, failedTargets: new Map() });
   conn.open.clear();
   $('conn').classList.add('open');
   connRender();
@@ -138,28 +150,62 @@ function connWindows(list) {
   if (!conn.active || conn.host !== true) return;
   // The connection page uses its own per-agent probe, including raw errors.
 }
-function connAgentResults(results) {
-  if (store.get('conn-auto-launch') === '1' && !conn.autoLaunched) {
-    conn.autoLaunched = true;
-    const missing = CONN_AGENTS.map(a => a.app).filter(app => !results.find(r => r.app === app)?.windows);
-    if (missing.length) connLaunch(missing);
-  }
-  if (!conn.active || conn.host !== true) return;
+const agentCatalogs = new Map();
+const agentReports = new Map();
+const agentComputerKey = () => currentComputer()?.id || currentComputer()?.key || base;
+const agentCatalog = () => agentCatalogs.get(agentComputerKey());
+function startupAgents() {
+  const saved = store.get('agent-start:' + agentComputerKey());
+  return saved === null ? CONN_AGENTS.map(a => a.app) : JSON.parse(saved);
+}
+function availableConnAgents() {
+  const catalog = agentCatalog();
+  return (conn.agents || []).filter(a => a.windows || (catalog && catalog.find(r => r.app === a.app)?.installed !== false));
+}
+function selectedLaunchAgents() {
+  const selected = startupAgents(), reports = agentReports.get(agentComputerKey()) || [];
+  return (agentCatalog() || []).filter(a => a.installed === true && !a.running && a.launchSupported && selected.includes(a.app)
+    && !reports.some(r => r.app === a.app && r.windows) && connLaunchStatus.get(a.app) !== 'launching').map(a => a.app);
+}
+function autoLaunchAgents() {
+  if (store.get('conn-auto-launch') !== '1' || conn.autoLaunched || !conn.catalogReady || !conn.probeComplete || !conn.agents) return;
+  conn.autoLaunched = true;
+  connLaunch(selectedLaunchAgents());
+}
+function agentCatalogResults(results) {
+  agentCatalogs.set(agentComputerKey(), results);
+  conn.catalogReady = true;
+  autoLaunchAgents();
+  if (conn.active) { connRender(); connMaybeEnter(); }
+  if (sheetKind === 'agent-manager') showAgentManager();
+}
+function connAgentResults(results, complete = true) {
+  conn.probeComplete = complete;
+  agentReports.set(agentComputerKey(), results);
   for (const r of results) if (r.windows) connLaunchStatus.delete(r.app);
-  conn.agents = CONN_AGENTS.map(a => ({ ...a, ...results.find(r => r.app === a.app) }));
-  connRender();
+  conn.agents = CONN_AGENTS.map(a => ({ ...a, pending: !results.some(r => r.app === a.app), ...results.find(r => r.app === a.app) }));
+  autoLaunchAgents();
+  if (sheetKind === 'agent-manager') showAgentManager();
+  if (conn.host !== true) return;
+  if (conn.active) connRender();
   ensureReadyAgent();
   connMaybeEnter();
 }
 function connLaunch(apps) {
-  const targets = (apps || CONN_AGENTS.map(a => a.app).filter(app => !(conn.agents || []).find(a => a.app === app)?.windows));
+  const targets = apps || selectedLaunchAgents();
   if (!targets.length) return;
   for (const app of targets) connLaunchStatus.set(app, 'launching');
   send({ t: 'launchAgents', apps: targets });
   connRender();
+  if (sheetKind === 'agent-manager') showAgentManager();
+}
+function connMissingApps() {
+  const available = new Set(availableConnAgents().map(a => a.app));
+  return (conn.agents || []).filter(a => available.has(a.app) && !a.windows).map(a => a.app);
 }
 function connLaunchResults(results) {
   for (const r of results || []) if (CONN_AGENTS.some(a => a.app === r.app)) connLaunchStatus.set(r.app, r.status);
+  if (sheetKind === 'agent-manager') showAgentManager();
   if (conn.active) return connRender();
   // Launched from the agent list while the overlay is hidden: the sheet re-renders on
   // the next windows update, but a failed launch needs an explicit reason.
@@ -174,8 +220,8 @@ function connLaunchNote(a) {
 }
 function connContentReady() {
   if (pendingStatus === '正在加载对话…') status('已连接');
-  if (!conn.active) return;
   conn.loaded = true;
+  conn.attachFailed = false;
   connRender();
   connMaybeEnter();
 }
@@ -183,32 +229,43 @@ function connContentReady() {
 // per-signature values like "cursor,devin") counts as on — enter whenever ≥1 agent is up.
 const connAutoPartialOn = () => { const v = store.get('conn-auto-partial'); return v !== null && v !== '' && v !== '0'; };
 function connMaybeEnter() {
-  if (!conn.active || !conn.loaded || !windowReady || !conn.agents) return;
-  const ready = conn.agents.filter(a => a.windows);
-  if (ready.length === CONN_AGENTS.length || (ready.length && (conn.enterRequested || connAutoPartialOn()))) connHide();
+  if (!conn.active || conn.host !== true || !conn.agents?.some(a => a.windows)) return;
+  const agents = availableConnAgents(), ready = agents.filter(a => a.windows);
+  if (conn.enterRequested || connAutoPartialOn() || conn.loaded && windowReady && conn.probeComplete
+      && (ready.length === CONN_AGENTS.length || conn.catalogReady && ready.length === agents.length)) connHide();
 }
 
 function ensureReadyAgent() {
-  if (conn.readyRedirect) return;
+  if (navigationPending || windowReady) return;
   const ready = (conn.agents || []).filter(a => a.windows).map(a => a.app);
-  if (!ready.length || currentApp === 'fusion') return;
+  if (!ready.length) return;
   const appOf = id => String(id || '').split(':')[0];
   const want = currentApp || appOf(currentComputer()?.win);
-  if (ready.includes(want)) return;
-  const target = CONN_AGENTS.map(a => a.app).find(a => ready.includes(a));
-  if (!target) return;
-  const wins = windows || [];
-  if (!wins.length) {
-    if (!conn.readyPending) { conn.readyPending = true; send({ t: 'windows' }); }
-    return;
-  }
   const sel = currentComputer()?.selections || {};
-  const pick = wins.find(w => appOf(w.id) === target && sel[w.id]) || wins.find(w => appOf(w.id) === target);
+  const picks = (windows || []).filter(w => ready.includes(appOf(w.id)))
+    .flatMap(w => (w.windowIds || [w.id]).map(id => ({ id, app: appOf(id) })))
+    .filter(w => !conn.failedTargets?.has(w.id));
+  picks.sort((a, b) => Number(b.app === want) - Number(a.app === want) || Number(!!sel[b.id]) - Number(!!sel[a.id]));
+  const pick = picks[0];
   if (!pick) return;
-  conn.readyRedirect = true;
-  status('正在切换窗口…');
-  send({ t: 'attach', id: pick.id, ...sel[pick.id] });
+  send({ t: 'attach', ...sel[pick.id], id: pick.id, initial: true });
 }
+function connReadFailed(message) {
+  const target = navigationPending?.windowId || currentWindow;
+  if (target) conn.failedTargets.set(target, message);
+  navigationPending = null;
+  conn.attachFailed = true;
+  setWindowReady(false);
+  $('retryChat').hidden = false;
+  status(message, false);
+  if (conn.active) connRender();
+  ensureReadyAgent();
+}
+function connRetryCurrent() {
+  const chosen = currentComputer();
+  send({ t: 'attach', id: chosen?.win || currentWindow || '', windowId: chosen?.windowId || '', threadId: chosen?.threadId || '', initial: true });
+}
+$('retryChat').onclick = connRetryCurrent;
 
 function connRender() {
   const tr = I18N.tr;
@@ -233,39 +290,45 @@ function connRender() {
   $('connGo').textContent = tr('进入');
   const icon = st => st === 'load' ? '<span class="cSpin"></span>' : `<span class="cIc">${st === 'ok' ? '✓' : st === 'err' ? '!' : ''}</span>`;
   const row = (st, tile, name, sub, label, brand = false) => `<div class="cItem ${st}"><div class="cRow"><div class="cTile${brand ? ' cBrand' : ''}">${tile}</div><div class="cMeta"><div class="cName">${esc(name)}</div><div class="cSub">${esc(sub)}</div></div><div class="cSt">${icon(st)}<span>${esc(tr(label))}</span></div></div></div>`;
-  const ready = conn.agents?.filter(a => a.windows).length || 0;
-  const settled = conn.agents !== null;
-  const agents = conn.agents || CONN_AGENTS;
-  const state = a => !conn.host ? 'wait' : !settled ? 'load' : a.windows ? 'ok' : 'err';
-  const names = agents.filter(a => a.windows).map(a => a.name).join(I18N.lang === 'en' ? ', ' : '、');
-  const missing = agents.filter(a => !a.windows).map(a => a.name).join(I18N.lang === 'en' ? ', ' : '、');
-  $('connTitle').textContent = !conn.host ? tr('正在连接电脑') : !settled ? agents.map(a => ct('{agent} 连接中', { agent: a.name })).join(' · ')
-    : ready === agents.length ? tr(conn.loaded ? '全部已连接 · 正在进入…' : '正在加载当前会话…') : ready ? ct('{ready} 已可用，{missing} 可稍后重试', { ready: names, missing }) : tr('没有可用的 Agent');
+  // Keep the three Agent rows visible while the window probe is running. The catalog
+  // remains an internal readiness/launch source and does not remove a display row.
+  const probeReady = conn.agents !== null;
+  const catalog = agentCatalog();
+  const agents = CONN_AGENTS.map(a => ({ ...a, ...conn.agents?.find(r => r.app === a.app) }));
+  const available = probeReady ? availableConnAgents() : [];
+  const ready = available.filter(a => a.windows).length;
+  const state = a => !conn.host ? 'wait' : !probeReady || a.pending ? 'load' : a.windows ? 'ok' : 'err';
+  const names = available.filter(a => a.windows).map(a => a.name).join(I18N.lang === 'en' ? ', ' : '、');
+  const missing = available.filter(a => !a.windows).map(a => a.name).join(I18N.lang === 'en' ? ', ' : '、');
+  const allReady = ready > 0 && ((conn.catalogReady && available.length > 0 && ready === available.length) || ready === CONN_AGENTS.length);
+  $('connTitle').textContent = !conn.host ? tr('正在连接电脑') : !probeReady ? tr('正在连接 Agent…')
+    : conn.attachFailed ? tr('当前会话读取失败，可先进入后重试或切换 Agent') : allReady ? tr(conn.loaded ? '正在进入…' : '正在加载当前会话…') : ready ? ct('{ready} 已可用，{missing} 可稍后重试', { ready: names, missing }) : tr('没有可用的 Agent');
   $('connLead').textContent = '';
   $('connHost').innerHTML = row(conn.host ? 'ok' : 'load', CONN_HOST_SVG, currentComputer()?.name || tr('电脑'), tr(conn.host ? '实时连接已建立' : conn.phase), conn.host ? '已连接' : '连接中…');
   $('connAgents').innerHTML = agents.map(a => {
     const st = state(a), open = conn.open.has(a.app);
     const reason = a.timeout ? ct('超时，请检查 {agent} 是否卡住', { agent: a.name }) : a.error ? ct('连接失败，请检查 {agent} 是否已启动', { agent: a.name }) : tr('未找到窗口，请打开项目');
-    const sub = st === 'ok' ? ct('{n} 个窗口可用', { n: a.windows }) : st === 'err' ? (connLaunchNote(a) || reason) : tr(st === 'wait' ? '等待主机' : '正在读取窗口…');
+    const installed = catalog?.find(r => r.app === a.app);
+    const sub = st === 'ok' ? ct('发现 {n} 个窗口', { n: a.windows }) : st === 'err' ? (connLaunchNote(a) || reason) : tr(st === 'wait' ? '等待主机' : '正在读取窗口…');
     const detail = [ct('地址：{v}', { v: a.address || '' }), a.error || tr('调试服务已响应，但未找到可用的项目窗口。'), a.app === 'cursor' ? tr('启动指引：在电脑上以远程调试模式启动 Cursor，然后重试。') : ct('启动指引：在电脑上运行 {command}，然后重试。', { command: './scripts/start-' + a.app + '.sh' })].join('\n');
     const launch = st === 'err' ? connLaunchStatus.get(a.app) : '';
-    const launchBtn = st === 'err' && launch !== 'missing' && launch !== 'unsupported'
+    const launchBtn = st === 'err' && installed?.installed === true && !installed.running && installed.launchSupported && launch !== 'missing' && launch !== 'unsupported'
       ? `<button class="cBtn cLaunch" data-conn-launch="${a.app}" ${launch === 'launching' ? 'disabled' : ''}>${launch === 'launching' ? `<span class="cSpin"></span>${esc(tr('启动中…'))}` : esc(tr('启动'))}</button>` : '';
     return `<div class="cItem ${st}"><div class="cRow"><div class="cTile cBrand"><img class="on-dark" src="logo-${a.app}-dark.svg" alt=""><img class="on-light" src="logo-${a.app}-light.svg" alt=""></div><div class="cMeta"><div class="cName">${a.name}</div><div class="cSub">${esc(sub)}</div></div><div class="cSt" aria-label="${esc(tr(CONN_TEXT[st]))}">${CONN_ICON[st]}${st === 'err' && !launchBtn ? `<span>${esc(tr('连接失败'))}</span>` : ''}</div>${st === 'err' ? `<button class="cWhy" data-conn-why="${a.app}" aria-expanded="${open}">${esc(tr(open ? '收起' : '查看原因'))}</button>` : ''}${launchBtn}</div>${st === 'err' && open ? `<div class="cErr"><pre class="cDetail">${esc(detail)}</pre><div class="cActs"><button class="cBtn" data-conn-retry="agents">${CONN_RETRY_SVG}${esc(tr('重试'))}</button><button class="cBtn ghost" data-conn-why="${a.app}">${esc(tr('收起'))}</button></div></div>` : ''}</div>`;
   }).join('');
-  $('connSum').textContent = settled ? `${ready}/${CONN_AGENTS.length} ${tr('可用')}` : '';
+  $('connSum').textContent = probeReady ? `${ready}/${CONN_AGENTS.length} ${tr('已发现')}` : '';
   $('connBar').style.gridTemplateColumns = `repeat(${CONN_AGENTS.length}, 1fr)`;
-  $('connBar').innerHTML = agents.map(a => `<i class="${conn.host ? state(a) : ''}"></i>`).join('');
-  $('connGo').hidden = !settled || ready === agents.length;
+  $('connBar').innerHTML = agents.map(a => `<i class="${state(a)}"></i>`).join('');
+  $('connGo').hidden = !probeReady;
   $('connGo').textContent = ready ? tr('先进入') : tr('全部重试');
-  const launchable = settled ? agents.filter(a => !a.windows) : [];
+  const launchable = probeReady ? connMissingApps() : [];
   $('connLaunchAll').hidden = !launchable.length;
-  $('connLaunchAll').disabled = launchable.length > 0 && launchable.every(a => connLaunchStatus.get(a.app) === 'launching');
+  $('connLaunchAll').disabled = launchable.length > 0 && launchable.every(app => connLaunchStatus.get(app) === 'launching');
   $('connAutoPartial').querySelector('.switch').classList.toggle('on', connAutoPartialOn());
   $('connAutoLaunch').querySelector('.switch').classList.toggle('on', store.get('conn-auto-launch') === '1');
-  $('connMore').hidden = !settled || !!ready;
+  $('connMore').hidden = !probeReady || !!ready;
   $('connPick').hidden = true;
-  $('connNote').textContent = settled && !ready ? tr('请在电脑上启动 Agent 的调试窗口，再点击全部重试。') : '';
+  $('connNote').textContent = probeReady && !ready ? tr('请在电脑上启动 Agent 的调试窗口，再点击全部重试。') : '';
 }
 $('connGo').onclick = () => {
   if (conn.host === 'err') return boot();
@@ -277,6 +340,8 @@ $('connGo').onclick = () => {
 function connRetryAgents() {
   clearTimeout(conn.timer);
   conn.agents = null;
+  conn.probeComplete = false;
+  conn.failedTargets.clear();
   connRender();
   send({ t: 'connAgents' });
 }
@@ -289,7 +354,7 @@ $('connAutoPartial').onclick = () => {
 };
 $('connPick').onclick = () => showComputers();
 $('connRepair').onclick = () => repairPairing();
-$('connLaunchAll').onclick = () => connLaunch();
+$('connLaunchAll').onclick = () => connLaunch(connMissingApps());
 $('connAutoLaunch').onclick = () => {
   store.set('conn-auto-launch', store.get('conn-auto-launch') === '1' ? '0' : '1');
   connRender();
