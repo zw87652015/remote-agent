@@ -758,6 +758,8 @@ async function connect() {
       clearInterval(pingTimer);
       pingTimer = setInterval(heartbeat, 15000);
       syncNotify();
+      // Android overview screen: the same entry credential the notification switch hands over.
+      window.AgentRemoteApp?.setOverview?.(nativeConfig());
       setTimeout(checkAppUpdate, 3000);
     }
     else if (m.t === 'sent') {
