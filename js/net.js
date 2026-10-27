@@ -67,8 +67,16 @@ let liveChatSelection = '';
 let navigationSerial = 0, navigationPending = null, selectionReady = false, selectionMetadata = '';
 let metadataWindow = '';
 function beginNavigation(message) {
+  if (!message.initial) conn.initialSelection = false;
+  failFileRead('目标已切换，文件读取已中断，请重新打开');
   message.navigationId = ++navigationSerial;
-  navigationPending = { id: message.navigationId, windowId: message.t === 'attach' ? message.id : currentWindow, confirmed: '' };
+  const kind = message.initial ? 'initial' : message.t === 'attach'
+    ? (String(message.id || '').split(':')[0] === currentApp ? 'window' : 'agent')
+    : message.newSession || /^(new:|project-new:)/.test(message.id || '') ? 'new'
+    : message.t === 'openProject' ? 'project' : /^(win:|window:)/.test(message.id || '') ? 'window' : 'session';
+  const messageText = { initial: '正在加载对话…', agent: '正在切换 Agent…', window: '正在切换窗口…', project: '正在打开项目…', session: '正在切换会话…', new: '正在新建对话…' }[kind];
+  navigationPending = { id: message.navigationId, windowId: message.t === 'attach' ? message.id : currentWindow, confirmed: '', kind, message: messageText };
+  status(messageText);
   conn.attachFailed = false;
   conn.failedTargets?.delete(navigationPending.windowId);
   $('retryChat').hidden = true;
@@ -79,6 +87,11 @@ function beginNavigation(message) {
   $('items').classList.add('stale');
   $('actionBar').replaceChildren();
   renderQuestions(null);
+}
+function finishNavigation() {
+  const kind = navigationPending?.kind;
+  navigationPending = null;
+  if (kind) status({ initial: '已连接', agent: '已切换 Agent', window: '已切换窗口', project: '已打开项目', session: '已切换会话', new: '已新建会话' }[kind]);
 }
 function selectionPreview() {
   $('items').inert = true;
@@ -96,7 +109,7 @@ function confirmNavigation() {
     selectionPreview();
     if (navigationPending) navigationPending.preview = viewSel;
   }
-  if (mode !== 'chat') { $('items').inert = false; setWindowReady(true); }
+  if (mode !== 'chat') { $('items').inert = false; setWindowReady(true); finishNavigation(); }
 }
 function refreshSelectionMetadata(initial = false) {
   const key = `${connGen}|${viewSel}|${navigationSerial}`;
@@ -110,12 +123,17 @@ function refreshSelectionMetadata(initial = false) {
   }
 }
 function applySelection(m, clearChat = true) {
-  if (m.app) { currentApp = m.app; capabilityOwner = m.app; agentCapabilities = m.capabilities || null; fusionSideCapabilities = m.sideCapabilities || {}; }
+  if (m.app) {
+    currentApp = m.app; currentAppName = m.appName; currentWindow = m.id;
+    capabilityOwner = m.app; agentCapabilities = m.capabilities || null; fusionSideCapabilities = m.sideCapabilities || {};
+    updateAppText();
+  }
   const changed = (m.sel || '') !== viewSel;
   if (changed) { if (typeof cancelVoice === 'function') cancelVoice(); menuRequest++; saveDraft(); }
   // A new chat gets its thread id once it materializes: keep its pending echoes attached to it.
   if (changed && viewSel.endsWith('|') && (m.sel || '').startsWith(viewSel)) for (const p of pendingEchoes) if (p.sel === viewSel) p.sel = m.sel;
   if (changed) {
+    failFileRead('目标已切换，文件读取已中断，请重新打开');
     invalidateChatRender();
     selectionReady = false;
     setWindowReady(false);
@@ -522,8 +540,12 @@ async function boot() {
   const old = ws;
   if (authed) {
     markUploadsDisconnected();
-    failPendingSends('连接已断开，消息未发送，请重试');
+    disconnectPendingSends();
+    failFileRead('连接已断开，文件读取已中断，请重试');
     failFileSave('连接已断开，保存结果未确认，请重试');
+    cancelChatContentRequests();
+    interruptSessionBatch();
+    cancelCodexAutoRetry();
   }
   ws = null;
   try { old?.close(); } catch {}
@@ -671,9 +693,13 @@ async function connect() {
     resetLatency();
     setWindowReady(false);
     markUploadsDisconnected();
-    failPendingSends('连接已断开，消息未发送，请重试');
+    disconnectPendingSends();
+    failFileRead('连接已断开，文件读取已中断，请重试');
     failFileSave('连接已断开，保存结果未确认，请重试');
     qnPending = null;
+    cancelChatContentRequests();
+    interruptSessionBatch();
+    cancelCodexAutoRetry();
     qnSig = '';
     renderQuestions(null);
     $('dot').className = '';
@@ -718,11 +744,13 @@ async function connect() {
       send({ t: 'mode', mode });
       const fromNotice = window.AgentRemoteApp?.takeOpenWin?.() || pendingNotice;
       pendingNotice = '';
+      if (fromNotice && noticeTarget(fromNotice)?.computer && noticeTarget(fromNotice).computer !== m.id) {
+        if (!openWin(fromNotice)) showComputers('通知来源电脑未配对，请从电脑列表连接');
+        return;
+      }
       if (fromNotice) rememberNotice(fromNotice);
       const chosen = currentComputer();
       send({ t: 'attach', id: chosen?.win || store.get('window') || '', windowId: chosen?.windowId || '', threadId: chosen?.threadId || '', initial: true });
-      sentWidth = 0;
-      applyQuality();
       send({ t: 'visible', v: document.visibilityState === 'visible' });
       send({ t: 'lang', v: I18N.lang });
       clearInterval(usageTimer);
@@ -737,6 +765,7 @@ async function connect() {
     }
     else if (m.t === 'queueDone') receiveQueueDone(m);
     else if (m.t === 'clickDone') {
+      finishCodexAutoRetry(m);
       if (m.sel !== viewSel) return;
       const button = [...$('items').querySelectorAll('button[data-item]')].find(b => b.dataset.item === String(m.item) && b.dataset.actionId === (m.actionId || ''));
       button?.closest('.btns')?.querySelectorAll('button').forEach(b => { b.disabled = false; });
@@ -758,7 +787,7 @@ async function connect() {
           const becameReady = !windowReady;
           if (navigationPending?.preview === viewSel && chatStale) for (const item of m.chat.items) if (item.b?.length) cache.delete(item.i);
           liveChatSelection = m.sel || viewSel;
-          navigationPending = null;
+          finishNavigation();
           $('retryChat').hidden = true;
           $('items').inert = false;
           setWindowReady(true);
@@ -782,9 +811,12 @@ async function connect() {
     else if (m.t === 'draftAck') receiveDraft(m);
     else if (m.t === 'historyPage') receiveHistoryPage(m);
     else if (m.t === 'historyDone') finishHistory(m);
-    else if (m.t === 'thread') applySelection(m);
+    else if (m.t === 'thread') {
+      applySelection(m);
+      if (m.ready === true) { selectionReady = true; confirmNavigation(); }
+    }
     else if (m.t === 'frame') onFrame(m);
-    else if (m.t === 'panel') { panel = m.rect; updateTermEmpty(); layoutStage(); applyQuality(); }
+    else if (m.t === 'panel') { panel = m.rect; updateTermEmpty(); layoutStage(); }
     else if (m.t === 'connAgents') connAgentResults(m.agents, m.complete !== false);
     else if (m.t === 'agentCatalog') agentCatalogResults(m.agents);
     else if (m.t === 'launchResult') connLaunchResults(m.results);
@@ -821,15 +853,12 @@ async function connect() {
       finishPending(['正在切换窗口…', '正在切换 Agent…']);
       store.set('window', m.id);
       applySelection(m, false);
-      currentWindow = m.id;
-      currentApp = m.app || null;
       selectionReady = m.ready !== false;
       setWindowReady(selectionReady && mode !== 'chat');
       scheduleLatency();
       $('dot').className = 'ok';
-      status(mode === 'chat' ? '正在加载对话…' : '已连接');
+      status(mode === 'chat' ? navigationPending?.message || '正在加载对话…' : '已连接');
       $('titleText').textContent = m.app === 'fusion' ? 'Fusion' : m.app === 'devin' ? 'Devin agent' : m.app === 'codex' ? 'Codex' : winLabel(m.title).name;
-      currentAppName = m.appName;
       currentProject = m.app === 'fusion' ? '' : (m.project || winLabel(m.title).name);
       updateAppText(); updateTitle();
       if (selectionReady) confirmNavigation();
@@ -887,7 +916,7 @@ async function connect() {
       closeSheet(); currentProject = m.name;
       if (m.chat) {
         liveChatSelection = viewSel;
-        navigationPending = null;
+        finishNavigation();
         $('items').inert = false;
         setWindowReady(true);
         cacheChat(viewSel, m.chat);
@@ -897,7 +926,7 @@ async function connect() {
       $('titleProject').textContent = m.name;
       $('sessionNotice').hidden = !m.newSession;
       $('sessionNotice').textContent = I18N.tr('会话创建成功，尚未发送消息。') + ' ' + m.name;
-      status(m.newSession ? '已在所选项目新建会话' : '已打开项目');
+      status(m.newSession ? '已在所选项目新建会话' : m.sessionSwitch ? '已切换会话' : '已打开项目');
       if (refreshEditor) startEditor();
     }
     else if (m.t === 'docs') showDocs(m);

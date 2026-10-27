@@ -5,11 +5,16 @@ const iosPush = () => Boolean(window.AgentRemoteApp?.pushRegister);
 const webPush = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
 let notifyOn = false;
 let notifySubscribed = false;
+let notifyGeneration = 0;
+function beginNotifyOperation() {
+  const generation = ++notifyGeneration, key = currentComputer()?.key;
+  return () => generation === notifyGeneration && key === currentComputer()?.key;
+}
 
 const serviceWorkerRegistration = () => {
   if (window.agentRemoteServiceWorker) return window.agentRemoteServiceWorker;
   if (!('serviceWorker' in navigator) || !window.isSecureContext) return (window.agentRemoteServiceWorker = Promise.resolve(null));
-  return (window.agentRemoteServiceWorker = navigator.serviceWorker.register('sw.js').catch(error => {
+  return (window.agentRemoteServiceWorker = navigator.serviceWorker.register('sw.js?v=' + APP_VERSION, { updateViaCache: 'none' }).catch(error => {
     window.agentRemoteServiceWorkerError = error;
     return null;
   }));
@@ -39,6 +44,7 @@ const nativeConfig = () => JSON.stringify({ app: appAddress(), key: store.get('k
 
 // After every connect, read this device's saved setting without enabling a retained subscription.
 async function syncNotify() {
+  const current = beginNotifyOperation();
   try {
     if (nativeNotify()) {
       notifyOn = window.AgentRemoteApp.notifyEnabled();
@@ -47,17 +53,19 @@ async function syncNotify() {
       const response = await api('/api/push/state');
       if (!response.ok) throw new Error('读取通知状态失败');
       const state = await response.json();
+      if (!current()) return;
       notifySubscribed = state.subscribed;
       notifyOn = state.enabled;
     } else {
       const [response, sub] = await Promise.all([api('/api/push/state'), pushSub()]);
       if (!response.ok) throw new Error('读取通知状态失败');
       const state = await response.json();
+      if (!current()) return;
       notifySubscribed = state.subscribed && Boolean(sub);
       notifyOn = state.enabled && Boolean(sub);
     }
   } catch {}
-  paintNotifySwitch();
+  if (current()) paintNotifySwitch();
 }
 
 // Reflect the confirmed notification state into an open main-menu sheet.
@@ -69,22 +77,26 @@ function paintNotifySwitch() {
 }
 
 async function enableNotify() {
+  const current = beginNotifyOperation();
   if (nativeNotify()) {
     window.AgentRemoteApp.setNotify(nativeConfig());
     notifyOn = true;
-    setTimeout(() => { if (window.AgentRemoteApp.listenStatus?.() !== 'connected') showBgSheet(); }, 4000);
+    setTimeout(() => { if (current() && window.AgentRemoteApp.listenStatus?.() !== 'connected') showBgSheet(); }, 4000);
     return status('通知已开启，正在连接电脑。请在手机的电池设置里允许本 App 后台运行，否则切到后台后会收不到通知');
   }
   if (iosPush()) {
     try {
       const reg = await window.AgentRemoteApp.pushRegister();
+      if (!current()) return;
       const r = await post('/api/push/apns', reg);
+      if (!current()) return;
       if (!r.ok) throw new Error((await r.json()).error || '注册失败');
       notifySubscribed = true;
       notifyOn = true;
       return status('通知已开启');
     } catch (e) {
-      return status('开启通知失败：' + e.message, false);
+      if (current()) return status('开启通知失败：' + e.message, false);
+      return;
     }
   }
   if (inApp) return status('请先在菜单里更新安卓 App，新版才支持通知', false);
@@ -95,32 +107,39 @@ async function enableNotify() {
   }
   // Must be the first await: iOS only shows the permission prompt directly inside a tap.
   const permission = Notification.permission === 'granted' ? 'granted' : await Notification.requestPermission();
+  if (!current()) return;
   if (permission !== 'granted') return status('没有通知权限，请在系统设置里允许本 App 发通知', false);
   try {
     let r;
     if (notifySubscribed) r = await post('/api/push/state', { enabled: true });
     else {
       const reg = await swReady();
+      if (!current()) return;
       let sub = await reg.pushManager.getSubscription();
       if (!sub) {
         const { key } = await api('/api/push/key').then(r => r.json());
+        if (!current()) return;
         sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64u(key) });
       }
+      if (!current()) return;
       r = await post('/api/push/subscribe', { sub: sub.toJSON() });
     }
+    if (!current()) return;
     if (!r.ok) throw new Error((await r.json()).error || '注册失败');
     notifySubscribed = true;
     notifyOn = true;
     status('通知已开启');
   } catch (e) {
-    status('开启通知失败：' + e.message, false);
+    if (current()) status('开启通知失败：' + e.message, false);
   }
 }
 
 async function disableNotify() {
+  const current = beginNotifyOperation();
   if (nativeNotify()) window.AgentRemoteApp.setNotify('');
   else {
     const response = await post('/api/push/state', { enabled: false });
+    if (!current()) return;
     if (!response.ok) throw new Error('关闭通知失败，请重试');
   }
   notifyOn = false;
@@ -129,32 +148,54 @@ async function disableNotify() {
 
 function noticeTarget(raw) {
   if (!raw) return null;
-  let win = String(raw), windowId = '', threadId = '';
+  let win = String(raw), computer = '', windowId = '', threadId = '';
   if (win.startsWith('{')) {
     try {
       const o = JSON.parse(win);
       win = o.win || '';
+      computer = o.computer || '';
       windowId = o.windowId || '';
       threadId = o.threadId || '';
     } catch { return null; }
   }
-  return win ? { win, windowId, threadId } : null;
+  return win ? { computer, win, windowId, threadId } : null;
 }
 function rememberNotice(raw) {
   const n = noticeTarget(raw);
-  if (!n) return;
-  store.set('window', n.win);
-  const here = currentComputer();
-  if (here) rememberComputer({ ...here, win: n.win, windowId: n.windowId, threadId: n.threadId });
+  if (!n) return false;
+  const list = loadComputers(), current = currentComputer();
+  const here = n.computer ? list.find(c => c.id === n.computer) : current;
+  if (!here) { status('通知来源电脑未配对，请从电脑列表连接', false); return false; }
+  const next = { ...here, win: n.win, windowId: n.windowId, threadId: n.threadId };
+  saveComputers(list.map(c => c.key === here.key ? next : c), current?.key);
+  if (here.key === current?.key) store.set('window', n.win);
+  return next;
 }
 function openWin(id) {
-  rememberNotice(id);
-  if (!authed) return;
-  const here = currentComputer();
-  send({ t: 'attach', id: here?.win || store.get('window') || '', windowId: here?.windowId || '', threadId: here?.threadId || '' });
+  const before = currentComputer()?.id;
+  const here = rememberNotice(id);
+  if (!here) return false;
+  if (before !== here.id) {
+    if (here.discovery && new URL(here.discovery).origin !== location.origin) {
+      const url = new URL('./', here.discovery);
+      url.hash = new URLSearchParams({ win: id }).toString();
+      openComputerEntry(url.href, here.id);
+    } else useComputer(loadComputers().findIndex(c => c.id === here.id));
+    return true;
+  }
+  if (!authed) { pendingNotice = id; return false; }
+  return send({ t: 'attach', id: here.win, windowId: here.windowId || '', threadId: here.threadId || '' });
 }
 window.openWin = openWin;
-navigator.serviceWorker?.addEventListener('message', e => { if (e.data?.openWin) openWin(e.data.openWin); });
+let updateUntouched = true;
+for (const event of ['pointerdown', 'keydown']) document.addEventListener(event, () => { updateUntouched = false; }, { once: true, capture: true });
+navigator.serviceWorker?.addEventListener('message', e => {
+  if (e.data?.openWin) openWin(e.data.openWin);
+  if (updateUntouched && Number(e.data?.appVersion?.slice(1)) > Number(APP_VERSION.slice(1))) {
+    updateUntouched = false;
+    location.reload();
+  }
+});
 document.addEventListener('visibilitychange', () => {
   if (authed) {
     send({ t: 'visible', v: document.visibilityState === 'visible' });
@@ -169,7 +210,7 @@ $('sheet').addEventListener('click', async e => {
     const id = b.dataset.agentActionId || '', name = b.dataset.agentActionTitle || '';
     if (b.dataset.agentAction === 'open') {
       pendingAgentOpen = id;
-      closeSheet(); status('正在切换 Agent…');
+      closeSheet();
       return send({ t: 'openAgent', id, title: name });
     }
     if (b.dataset.agentAction === 'favorite') {
@@ -181,19 +222,22 @@ $('sheet').addEventListener('click', async e => {
       const next = window.prompt('新的会话名称', name);
       if (!next?.trim()) return;
       closeSheet(); status('正在重命名…');
-      if (currentApp !== 'codex') return send({ t: 'sessionManage', id, action: 'rename', name: next.trim().slice(0, 80) });
-      return send({ t: 'codexRename', id, name: next.trim().slice(0, 80) });
+      if (currentApp !== 'codex') send({ t: 'sessionManage', id, action: 'rename', name: next.trim().slice(0, 80) });
+      else send({ t: 'codexRename', id, name: next.trim().slice(0, 80) });
+      return renderAgentList();
     }
     if (b.dataset.agentAction === 'delete' || (b.dataset.agentAction === 'archive' && currentApp !== 'codex')) {
       const action = b.dataset.agentAction, label = action === 'delete' ? '删除' : '归档';
       if (!await ask(`${label}「${name}」？`, label)) return;
       closeSheet(); status(`正在${label}…`);
-      return send({ t: 'sessionManage', id, action });
+      send({ t: 'sessionManage', id, action });
+      return renderAgentList();
     }
     if (b.dataset.agentAction === 'archive') {
       if (!await ask(`删除或归档「${name}」？\n桌面端会根据当前入口执行删除或归档。`, '继续')) return;
       closeSheet(); status('正在删除／归档…');
-      return send({ t: 'codexArchive', id });
+      send({ t: 'codexArchive', id });
+      return renderAgentList();
     }
   }
   if ('modelBack' in b.dataset) return requestMenu('model', '读取模型列表…');
@@ -299,11 +343,12 @@ $('sheet').addEventListener('click', async e => {
   if (b.dataset.fusionId) { closeSheet(); return send({ t: 'fusionSide', side: b.dataset.fusionPick, id: b.dataset.fusionId }); }
   if (b.dataset.codexArchive) {
     const id = b.dataset.codexArchive, name = b.dataset.codexName || '';
-    if (!await ask(`归档「${name}」？\n它会从当前列表移除，历史记录仍保留。`, '归档')) { send({ t: 'agents' }); return; }
+    if (!await ask(`归档「${name}」？\n它会从当前列表移除，历史记录仍保留。`, '归档')) { if (!sheetKind) renderAgentList(); return; }
     status('正在归档…');
-    return send({ t: 'codexArchive', id });
+    send({ t: 'codexArchive', id });
+    return renderAgentList();
   }
-  if (b.dataset.agent) { pendingAgentOpen = b.dataset.agent; closeSheet(); status('正在切换 Agent…'); return send({ t: 'openAgent', id: b.dataset.agent, title: b.dataset.agentTitle || '' }); }
+  if (b.dataset.agent) { pendingAgentOpen = b.dataset.agent; closeSheet(); return send({ t: 'openAgent', id: b.dataset.agent, title: b.dataset.agentTitle || '' }); }
   if (b.dataset.term) { closeSheet(); status('正在切换终端…'); return send({ t: 'openTerminal', id: b.dataset.term }); }
   if ('projectPath' in b.dataset) {
     const path = window.prompt(I18N.tr('电脑上的文件夹完整路径'));
