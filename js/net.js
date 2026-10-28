@@ -430,6 +430,7 @@ function offerComputers(msg, { err = true, repair = false } = {}) {
   else autoRetry();
 }
 async function showOffline(failure = { stage: '应用连接', error: '' }) {
+  window.AgentRemoteApp?.directDone?.();
   const gen = ++offlineGen;
   lastFailure = failure;
   clearTimeout(retryTimer);
@@ -559,12 +560,13 @@ async function boot() {
     pending.stay = true;
     return;
   }
-  gate({ msg: '正在查找电脑…' });
+  const direct = !pending && !!currentComputer() && !!window.AgentRemoteApp?.directOpen?.();
+  if (direct) { ungate(); connHide(); } else gate({ msg: '正在查找电脑…' });
   if (pending?.key) {
     const saved = loadComputers().find(c => c.key === pending.key);
     if (saved) saveComputers(loadComputers(), saved.key);
   }
-  if (!pending && currentComputer()) connShow('正在查找电脑…');
+  if (!pending && currentComputer() && !direct) connShow('正在查找电脑…');
   const chosen = currentComputer();
   const current = () => generation === bootGeneration && currentComputer()?.key === chosen?.key;
   const discovery = fetch(discoveryUrl() + '?t=' + Date.now(), { cache: 'no-store', signal: AbortSignal.timeout(10000) }).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
