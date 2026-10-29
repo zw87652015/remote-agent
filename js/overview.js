@@ -247,12 +247,12 @@ function ovCard(r) {
   return status + body + off + err + `<div class="ov-cfoot"><button class="ov-link" data-ov="full" data-t="${esc(JSON.stringify(ovTarget(r)))}">打开对话 →</button></div>`;
 }
 function ovSessions(recs) {
-  const list = recs.slice().sort((a, b) => ovRank(a) - ovRank(b) || ovRecency(b) - ovRecency(a));
+  const list = recs.slice().sort((a, b) => Math.min(ovRank(a), 3) - Math.min(ovRank(b), 3) || ovRecency(b) - ovRecency(a));
   const act = list.filter(r => ovRank(r) < 3), fin = list.filter(r => ovRank(r) >= 3);
-  const idle = fin.filter(r => r.state === 'idle'), done = fin.filter(r => r.state === 'done');
-  const shown = ovS.more ? idle : idle.slice(0, 6), rest = idle.length - shown.length;
+  let idle = 0;
+  const shown = fin.filter(r => r.state === 'done' || ovS.more || idle++ < 6), rest = fin.length - shown.length;
   return act.map(ovSessTile).join('') + (fin.length
-    ? `<div class="ov-div">${ovT('已结束')}</div>${[...shown, ...done].map(ovSessTile).join('')}${rest ? `<div class="ov-more" data-ov="more">显示其余 ${rest} 个空闲会话</div>` : ''}`
+    ? `<div class="ov-div">${ovT('已结束')}</div>${shown.map(ovSessTile).join('')}${rest ? `<div class="ov-more" data-ov="more">显示其余 ${rest} 个空闲会话</div>` : ''}`
     : '');
 }
 function ovEmpty(text) { return `<div class="ov-empty">${text}</div>`; }
