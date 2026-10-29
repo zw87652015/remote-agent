@@ -134,12 +134,14 @@ function connHide() {
   conn.active = false;
   $('conn').classList.remove('open');
 }
-function connShow(phase) {
+function newComputerConnection(phase) {
+  return { active: true, initialSelection: true, host: false, phase, agents: null, catalogReady: false, autoLaunched: false, loaded: false, attachFailed: false, enterRequested: false, failure: null, conclusion: '', checks: [], diagRunning: false, probeComplete: false, failedTargets: new Map(), open: new Set(), timer: 0 };
+}
+function connShow(phase, connection = newComputerConnection(phase)) {
   clearTimeout(conn.timer);
   compatibilityRequests.clear();
   compatibilityReports.clear();
-  Object.assign(conn, { active: true, initialSelection: true, host: false, phase, agents: null, catalogReady: false, autoLaunched: false, loaded: false, attachFailed: false, enterRequested: false, failure: null, conclusion: '', checks: [], diagRunning: false, probeComplete: false, failedTargets: new Map() });
-  conn.open.clear();
+  Object.assign(conn, connection);
   $('conn').classList.add('open');
   connRender();
 }
@@ -261,7 +263,6 @@ function connLaunchNote(a) {
     unsupported: I18N.tr('这台电脑暂不支持远程启动'), timeout: I18N.tr('启动失败，请在电脑上检查'), failed: I18N.tr('启动失败，请在电脑上检查') }[st] || '';
 }
 function connContentReady() {
-  window.AgentRemoteApp?.directDone?.();
   conn.initialSelection = false;
   if (pendingStatus === '正在加载对话…') status('已连接');
   conn.loaded = true;
@@ -296,7 +297,6 @@ function ensureReadyAgent() {
   send({ t: 'attach', ...(saved || { id: pick.id }), initial: true });
 }
 function connReadFailed(message) {
-  window.AgentRemoteApp?.directDone?.();
   const target = navigationPending?.targetId || currentWindow;
   if (target) conn.failedTargets.set(target, message);
   navigationPending = null;
