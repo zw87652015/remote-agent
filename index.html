@@ -35,7 +35,7 @@
 <link rel="icon" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon-192.png">
 <title>Remote Agent</title>
-<link rel="stylesheet" href="app.css?v=314">
+<link rel="stylesheet" href="app.css?v=362">
 </head>
 <body>
 <nav id="rail" aria-label="导航"></nav>
@@ -137,6 +137,7 @@
     <button id="newChat">＋ 新建</button>
     <div id="fusionConfig" hidden><button id="fusionModelA" class="dd">A 模型</button><button id="fusionModelB" class="dd">B 模型</button><button id="fusionProject" class="dd">项目</button></div>
   </div>
+  <button id="composerFold" type="button" title="收起输入框" aria-label="收起输入框" aria-expanded="true" aria-controls="text"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>
   <div id="termToolsLabel" hidden>终端操作</div>
   <div id="termTools" hidden>
     <button id="pickTerms">列表</button>
@@ -177,6 +178,7 @@
       <div class="ov-lane" id="ovLane" hidden></div>
       <div class="ov-board" id="ovBoard"></div>
     </div>
+    <div class="ov-batch" id="ovBatch" hidden></div>
   </div>
   <div class="ov-toasts" id="ovToasts"></div>
 </div>
@@ -225,23 +227,6 @@
   </div>
 </div>
 
-<div id="conn" role="dialog" aria-labelledby="connTitle">
-  <div class="cTop"><span class="cBrand"><img src="icon-192.png" alt="">Remote Agent</span><button id="connSwitch" class="cLink">切换电脑</button></div>
-  <h2 id="connTitle"></h2><p id="connLead"></p>
-  <div class="cLabel" id="connHostLabel">主机</div><div class="cGroup" id="connHost" aria-live="polite"></div>
-  <div id="connAgentsWrap">
-  <div class="cLabel"><span>Agent</span><span id="connSum"></span></div>
-  <div class="cBar" id="connBar" aria-hidden="true"></div>
-  <div class="cGroup" id="connAgents" aria-live="polite"></div>
-  </div>
-  <div class="cFoot"><p id="connNote"></p>
-    <div class="cActions"><button id="connLaunchAll" class="cGo cAlt" hidden>启动全部 Agent</button><button id="connGo" class="cGo" hidden>进入</button></div>
-    <div id="connMore" hidden><button id="connPick">切换电脑</button><button id="connRepair">重新配对</button></div>
-    <div class="cOpts"><button id="connAutoPartial" class="cPref" hidden><span class="switch"></span><span>部分失败时直接进入</span></button><button id="connAutoLaunch" class="cPref" hidden><span class="switch"></span><span>自动启动未打开的 Agent</span></button></div>
-  </div>
-  <div id="connVersion" class="conn-version"></div>
-</div>
-
 <div id="scanner" role="dialog" aria-modal="true" aria-labelledby="scannerTitle" hidden>
   <video id="scannerVideo" autoplay muted playsinline></video>
   <div class="scannerShade"></div>
@@ -251,28 +236,28 @@
   <input id="scannerFile" type="file" accept="image/*" hidden>
 </div>
 
-<script src="i18n.js?v=313"></script>
-<script src="js/core.js?v=316"></script>
-<script src="js/gate.js?v=309"></script>
+<script src="i18n.js?v=359"></script>
+<script src="js/core.js?v=365"></script>
+<script src="js/gate.js?v=355"></script>
 <script src="js/scanner.js"></script>
 <script src="js/auth.js?v=207"></script>
-<script src="js/net.js?v=313"></script>
-<script src="js/sheets.js?v=313"></script>
-<script src="js/notify.js?v=313"></script>
-<script src="js/overview.js?v=316"></script>
+<script src="js/net.js?v=365"></script>
+<script src="js/sheets.js?v=365"></script>
+<script src="js/notify.js?v=361"></script>
+<script src="js/overview.js?v=365"></script>
 <script src="js/mode.js?v=257"></script>
 <script src="markdown-it/markdown-it-15.0.3.min.js"></script>
 <script src="js/markdown.js?v=295"></script>
 <script src="js/chat.js?v=295"></script>
-<script src="js/history.js?v=297"></script>
-<script src="js/files.js?v=273"></script>
+<script src="js/history.js?v=358"></script>
+<script src="js/files.js?v=354"></script>
 <script src="js/transfer.js?v=207"></script>
 <script src="js/screen.js?v=267"></script>
 <script src="js/terminal.js?v=239"></script>
-<script src="js/composer.js?v=306"></script>
+<script src="js/composer.js?v=360"></script>
 <script src="js/latency.js?v=142"></script>
 <script src="js/image-editor.js?v=257"></script>
-<script src="js/voice.js?v=277"></script>
-<script src="js/local-voice.js?v=267"></script>
+<script src="js/voice.js?v=356"></script>
+<script src="js/local-voice.js?v=362"></script>
 </body>
 </html>

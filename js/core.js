@@ -7,9 +7,9 @@ const store = {
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const themeName = () => ({ dark: '深色', light: '浅色', auto: '跟随系统' })[store.get('theme') || 'dark'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const APP_VERSION = 'v316'; // keep in sync with the CACHE name in sw.js
+const APP_VERSION = 'v365'; // keep in sync with the CACHE name in sw.js
 
-let base = null, info = null, ws = null, authed = false, failures = 0;
+let base = null, info = null, ws = null, authed = false;
 let windowReady = false;
 let menuRequest = 0;
 let codexSettingsRequest = 0;
@@ -55,14 +55,14 @@ function receiveAgents(m) {
   const key = agentListKey();
   const previous = agentLists.get(key) || [];
   const previousById = new Map(previous.map(a => [a.id, a]));
-  let list = m.list || [];
+  let list = (m.list || []).filter(a => agentSessionAvailable(a));
   list = list.map(a => {
     const old = previousById.get(a.id);
     const running = old && !Object.hasOwn(a, 'running') && Object.hasOwn(old, 'running') ? { running: old.running } : {};
     return { ...a, ...running, title: a.title || old?.title || '未命名会话' };
   });
   if (m.partial) {
-    const remaining = (agentLists.get(key) || []).filter(a => a.picker);
+    const remaining = (agentLists.get(key) || []).filter(a => a.picker && agentSessionAvailable(a));
     list = [...list, ...remaining.filter(a => !list.some(b => agentThreadKey(b) === agentThreadKey(a)))];
   }
   const changed = JSON.stringify(agentLists.get(key)) !== JSON.stringify(list);
@@ -70,11 +70,16 @@ function receiveAgents(m) {
   if (!m.silent) finishPending(['正在读取 Agent 列表…', '正在归档…']);
   if (sheetKind === 'agents' && changed) showAgents(list);
 }
+function requestAgentCatalog() {
+  if (authed && windowReady && !navigationPending && ['cursor', 'devin', 'codex'].includes(currentApp))
+    return send({ t: 'agents', automatic: true, silent: true });
+}
 function openAgentList(refresh = false) {
   const cached = agentLists.get(agentListKey());
   if (cached) showAgents(cached);
   else { openSheet('agents', '<h3>项目与会话</h3><p class="hint">正在读取 Agent 列表…</p>'); status('正在读取 Agent 列表…'); }
-  send({ t: 'agents', automatic: !!cached && !refresh, silent: !!cached && !refresh, checkTrust: true });
+  if (cached && !refresh) requestAgentCatalog();
+  else send({ t: 'agents', checkTrust: true });
 }
 let currentAppName = I18N.tr('当前应用');
 let viewSel = '';
@@ -102,7 +107,6 @@ function updateAppText() {
 
 // iOS scrolls the page to reveal the focused field, which throws the chat off screen.
 // Pin the shell to the visible area above the keyboard instead.
-let stickOnKeyboard = false;
 let vvApplied = '';
 function fitViewport() {
   const vv = window.visualViewport;
@@ -112,7 +116,6 @@ function fitViewport() {
   const wasKeyboard = document.body.classList.contains('kb');
   const key = `${keyboard}:${Math.round(vv.height)}:${Math.round(vv.offsetTop)}`;
   if (key !== vvApplied) {
-    if ((keyboard || wasKeyboard) && typeof noteChatLayoutChange === 'function') noteChatLayoutChange();
     vvApplied = key;
     document.body.style.height = keyboard ? Math.round(vv.height) + 'px' : '';
     document.body.style.transform = keyboard ? `translateY(${Math.max(0, Math.round(vv.offsetTop))}px)` : '';
@@ -124,7 +127,6 @@ function fitViewport() {
     const available = input.offsetHeight + $('listWrap').clientHeight - 72 - overflow;
     const maxHeight = Math.max(52, Math.floor(Math.min(vv.height * .28, available))) + 'px';
     if (document.body.style.getPropertyValue('--composer-max-height') !== maxHeight) {
-      if (typeof noteChatLayoutChange === 'function') noteChatLayoutChange();
       document.body.style.setProperty('--composer-max-height', maxHeight);
     }
     const room = input.closest('footer').getBoundingClientRect().top - document.querySelector('header').getBoundingClientRect().bottom
@@ -135,7 +137,7 @@ function fitViewport() {
     document.body.style.removeProperty('--question-max-height');
   }
   if (wasKeyboard && !keyboard && typeof endComposerEditing === 'function') endComposerEditing();
-  if (stickOnKeyboard && isFollowingBottom()) requestChatScroll();
+  if (typeof noteChatLayoutChange === 'function') noteChatLayoutChange();
 }
 window.addEventListener('resize', fitViewport);
 window.addEventListener('pageshow', fitViewport);
@@ -184,12 +186,16 @@ const ACTION_PENDING = new Set([
 let statusGen = 0;
 let statusTimer = 0;
 let pendingStatus = '';
+function paintComposeStatus(text, ok = true) {
+  $('msg').textContent = text || '';
+  $('msg').className = text === '已连接' ? 'quiet' : (ok ? '' : 'err');
+  document.dispatchEvent(new Event('composer-state'));
+}
 function status(text, ok = true) {
   const gen = ++statusGen;
   clearTimeout(statusTimer);
   pendingStatus = ok && ACTION_PENDING.has(text) ? text : '';
-  $('msg').textContent = text || '';
-  $('msg').className = text === '已连接' ? 'quiet' : (ok ? '' : 'err');
+  paintComposeStatus(text, ok);
   const keep = text === '已连接' || (ok && /…$/.test(text || '') && !pendingStatus);
   if (!text || !ok || keep || pendingStatus) return;
   const wait = 2800;
@@ -197,8 +203,7 @@ function status(text, ok = true) {
     if (gen !== statusGen) return;
     statusGen++;
     pendingStatus = '';
-    $('msg').textContent = '';
-    $('msg').className = '';
+    paintComposeStatus('');
   }, wait);
 }
 function finishPending(list) {
@@ -207,16 +212,21 @@ function finishPending(list) {
 
 const desktopRequests = new Map();
 function desktopAction(obj) {
+  if (obj.t === 'overviewManage') return true;
   if (currentApp === 'fusion') return false;
   return obj.t === 'send' ? obj.submit !== false && mode !== 'terminal'
     : obj.t === 'queue' ? obj.action !== 'read'
     : ['stop', 'pickMenu', 'question', 'codexRequest', 'click', 'subagent', 'saveFile', 'sessionManage', 'sessionBatch', 'codexRename', 'codexArchive'].includes(obj.t);
 }
+function sendDesktopOperation(obj, computer = currentComputer()?.id || '', socket = ws, pending = {}) {
+  obj.operationId ||= crypto.randomUUID();
+  desktopRequests.set(obj.operationId, { computer, revision: 0, ...pending });
+  socket.send(JSON.stringify(obj));
+}
 function send(obj) {
   obj.sel ??= viewSel;
   if (['attach', 'openAgent', 'openProject'].includes(obj.t)) beginNavigation(obj);
   if (obj.t === 'attach') {
-    conn.loaded = false;
     const name = {cursor: 'Cursor', devin: 'Devin', codex: 'Codex', fusion: 'Fusion'}[String(obj.id || '').split(':')[0]];
     if (name) $('titleText').textContent = name + '…';
   }
@@ -237,11 +247,9 @@ function send(obj) {
   }
   if (currentApp === 'codex' && ['settings', 'codexSetting', 'codexInstructions'].includes(obj.t)) obj.requestId = ++codexSettingsRequest;
   if (ws && ws.readyState === 1 && authed) {
-    if (desktopAction(obj)) {
-      obj.operationId ||= crypto.randomUUID();
-      desktopRequests.set(obj.operationId, { computer: currentComputer()?.id || '', revision: 0 });
-    }
-    ws.send(JSON.stringify(obj)); return true;
+    if (desktopAction(obj)) sendDesktopOperation(obj);
+    else ws.send(JSON.stringify(obj));
+    return true;
   }
   status('未连接', false);
   return false;
@@ -251,5 +259,7 @@ function setWindowReady(ready) {
   windowReady = ready;
   if (typeof updateVoiceButton === 'function') updateVoiceButton();
   $('send').disabled = $('sendNow').disabled = !ready;
+  document.dispatchEvent(new Event('composer-state'));
+  if (ready) { ovEnterReady(); document.dispatchEvent(new Event('window-ready')); }
 }
 

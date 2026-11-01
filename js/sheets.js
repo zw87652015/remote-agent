@@ -2,6 +2,7 @@
 let sheetKind = null;
 let menuRefreshTimer = 0;
 let menuPending = null, menuPickRequest = 0, modelSwitchRequest = null;
+let computerProjects = false;
 function finishModelPick(m) {
   if (!modelSwitchRequest || m.requestId !== modelSwitchRequest.requestId) return;
   modelSwitchRequest = null;
@@ -22,6 +23,7 @@ let sharedAgentLibrary = { computer: '', records: {} };
 let pendingAgentFavorite = null;
 let agentActionRequest = 0;
 let pendingAgentActions = null;
+let agentActionTarget = null;
 let agentBatch = null;
 function batchActive() { return agentBatch?.key === agentListKey(); }
 function receiveSessionBatch(m) {
@@ -87,18 +89,33 @@ function legacyAgentLibrary() {
   }
   return [...entries.values()];
 }
-function sharedAgentRecord(id) {
+function sharedAgentRecord(id, app = currentApp) {
   return sharedAgentLibrary.computer === currentComputer()?.id
-    ? sharedAgentLibrary.records[currentApp]?.[agentThreadKey({ id })] || {} : {};
+    ? sharedAgentLibrary.records[app]?.[agentThreadKey({ id }, app)] || {} : {};
+}
+function agentSessionAvailable(row, app = currentApp) {
+  const state = sharedAgentRecord(row.id, app);
+  return row.ui || !state.archived && !state.deleted;
 }
 function receiveSessionLibrary(message) {
   if (message.computer !== currentComputer()?.id) return;
   sharedAgentLibrary = message;
+  for (const app of ['cursor', 'devin', 'codex']) {
+    const prefix = currentComputer().key + ':' + app;
+    for (const [key, list] of [...agentLists]) {
+      if (key !== prefix && !key.startsWith(prefix + ':')) continue;
+      const available = list.filter(row => agentSessionAvailable(row, app));
+      if (available.length !== list.length) setAgentList(key, available);
+    }
+  }
   if (pendingAgentFavorite && message.records[pendingAgentFavorite.app]?.[agentThreadKey({ id: pendingAgentFavorite.id }, pendingAgentFavorite.app)]?.favorite === pendingAgentFavorite.on) {
     status(pendingAgentFavorite.on ? '已设为常用' : '已取消常用');
     pendingAgentFavorite = null;
   }
   if (sheetKind === 'agents') renderAgentList();
+  const here = currentComputer();
+  if (windowReady && !navigationPending && !agentSessionAvailable({ id: here.threadId }))
+    send({ t: 'attach', id: here.win, windowId: here.windowId, threadId: '' });
 }
 function receiveSessionChange(message) {
   if (message.computer !== currentComputer()?.id) return;
@@ -113,16 +130,19 @@ function receiveSessionChange(message) {
   if (message.action !== 'rename' && currentApp === message.app && here.threadId === message.id)
     send({ t: 'attach', id: here.win, windowId: here.windowId, threadId: '' });
 }
+function agentSessionCommon(record) {
+  const lastMessageAt = Number(record.lastMessageAt) || 0;
+  const ageDays = lastMessageAt > 0 && lastMessageAt <= Date.now() ? (Date.now() - lastMessageAt) / 86400000 : Infinity;
+  return record.favorite === true || (lastMessageAt > 0 && ageDays <= 7);
+}
 function agentUsageInfo(a) {
   const thread = agentThreadKey(a);
   const saved = { ...(agentUsage[agentUsageKey(thread)] || {}), ...(agentUsage[agentUsageKey(a.id)] || {}) };
   const opened = agentOpened[agentOpenedKey(thread)] || 0;
   const lastUsed = Math.max(Number(a.lastUsed) || 0, Number(saved.last) || 0, opened);
   const shared = sharedAgentRecord(a.id);
-  const lastMessageAt = Number(shared.lastMessageAt) || 0;
-  const ageDays = lastMessageAt > 0 && lastMessageAt <= Date.now() ? (Date.now() - lastMessageAt) / 86400000 : Infinity;
   const favorite = shared.favorite === true;
-  return { ...a, ...(shared.title && !a.ui ? { title: shared.title } : {}), lastUsed, favorite, common: favorite || (lastMessageAt > 0 && ageDays <= 7) };
+  return { ...a, ...(shared.title && !a.ui ? { title: shared.title } : {}), lastUsed, favorite, common: agentSessionCommon(shared) };
 }
 function agentFavoriteState(id) {
   return sharedAgentRecord(id).favorite === true;
@@ -159,6 +179,7 @@ function rememberAgentOpen(m) {
   }
 }
 function openSheet(kind, html) {
+  if (kind !== 'projects') computerProjects = false;
   if (kind !== 'ask') askDone?.(false);
   if (kind !== 'agents') pendingProjectReveal = null;
   if (sheetKind === 'devices' && kind !== 'devices') deviceInviteGeneration++;
@@ -196,7 +217,9 @@ function openSheet(kind, html) {
   if (leavingVoice) scheduleVoiceWarmup();
 }
 function closeSheet() {
+  computerProjects = false;
   askDone?.(false);
+  agentActionTarget = null;
   pendingProjectReveal = null;
   cancelDocs();
   clearTimeout(menuRefreshTimer);
@@ -241,10 +264,18 @@ $('shade').onclick = () => { closeSheet(); };
 
 // Confirmation for anything that interrupts the Agent or throws work away; resolves false if dismissed.
 let askDone = null;
-function ask(question, ok = '确定') {
+const confirmationScope = () => [currentComputer()?.id || '', viewSel, mode].join('|');
+function ask(question, ok = '确定', scoped = false) {
   askDone?.(false);
+  const owner = scoped ? confirmationScope() : '';
   return new Promise(resolve => {
-    askDone = v => { askDone = null; resolve(v); };
+    const changed = () => { if (owner !== confirmationScope()) closeSheet(); };
+    askDone = v => {
+      if (scoped) document.removeEventListener('composer-state', changed);
+      askDone = null;
+      resolve(v && (!scoped || owner === confirmationScope()));
+    };
+    if (scoped) document.addEventListener('composer-state', changed);
     openSheet('ask', `<h3 class="askQ">${esc(question)}</h3><div class="askBtns">`
       + `<button id="askNo">取消</button><button id="askOk" class="danger">${esc(ok)}</button></div>`);
     $('askOk').onclick = () => { askDone?.(true); closeSheet(); };
@@ -549,6 +580,31 @@ function startEditor() {
   send({ t: 'docs', editor: true });
 }
 $('pickEditor').onclick = startEditor;
+function showComputerActions(id, app = '') {
+  const entry = ovList.find(e => e.id === id);
+  const list = ovSt.get(id)?.data?.windows || [];
+  const link = computerSockets.get(entry.c.key);
+  const catalog = link.metadata.get('agentCatalog')?.agents || [];
+  app ||= list.find(w => w.windowId === entry.c.windowId)?.app || list[0]?.app || 'cursor';
+  const names = { cursor: 'Cursor', devin: 'Devin', codex: 'Codex' };
+  const attr = `data-computer-id="${esc(id)}"`;
+  const tabs = Object.entries(names).map(([key, name]) => `<button type="button" class="paramBtn${key === app ? ' cur' : ''}" data-computer-app="${key}" ${attr} aria-pressed="${key === app}">${name}</button>`).join('');
+  const projects = list.filter(w => w.app === app);
+  const targetAttr = w => `data-computer-target="${esc(JSON.stringify({ computer: id, win: w.win, windowId: w.windowId }))}"`;
+  const selected = projects.find(w => w.windowId === entry.c.windowId) || projects[0];
+  const agent = catalog.find(a => a.app === app);
+  const missing = `<p class="hint">${esc(I18N.tr(agent?.reason || '请先打开此 Agent'))}</p>${agent?.installed === true && !agent.running && agent.launchSupported ? `<button class="opt" data-computer-launch="${app}" ${attr}>${I18N.tr('启动')} ${names[app]}</button>` : ''}`;
+  openSheet('computer-actions', `<h3>${I18N.tr('打开项目／新建会话')}</h3><p class="hint">${esc(entry.name)}</p><div class="pSec">${I18N.tr('选择 Agent')}</div><div class="computerAgentTabs">${tabs}</div>${selected ? `<button class="opt" data-computer-action ${targetAttr(selected)}>${I18N.tr('选择文件夹')}</button>` : missing}`);
+}
+function showComputerFiles() {
+  const state = computerFiles, dir = state.directory;
+  const field = document.activeElement?.id === 'computerFilePath' ? document.activeElement : null;
+  const selection = field && [field.selectionStart, field.selectionEnd];
+  const rows = (dir?.entries || []).map(e => `<button class="opt editorEntry${e.directory ? ' editorFolder' : ''}" data-computer-path="${esc(e.path)}" data-computer-directory="${!!e.directory}" ${e.selectable ? '' : 'disabled'}>${fileEntryIcon(e.directory)}<span class="lbl ovRaw">${esc(e.name)}</span>${e.directory ? '<span class="editorEntryArrow" aria-hidden="true">›</span>' : `<span class="sub">${e.selectable ? fmtSize(e.size) : I18N.tr('不可读取')}</span>`}</button>`).join('');
+  openSheet('computer-files', `<h3>${I18N.tr('打开文件')}</h3><p class="hint ovRaw">${esc(state.computer.name)}</p><form id="computerFilePathForm" class="computerFilePath"><input id="computerFilePath" class="ovRaw" aria-label="${I18N.tr('文件路径')}" placeholder="${I18N.tr('输入路径')}" value="${esc(state.path)}" autocomplete="off" autocapitalize="off" spellcheck="false"><button type="button" data-computer-complete title="Tab">${I18N.tr('补全')} ⇥</button><button type="submit">${I18N.tr('前往')}</button></form><div id="computerFileCompletions"></div><div class="computerFileNav"><button type="button" data-computer-path="${esc(dir?.parent ?? '')}" data-computer-directory="true" ${dir?.parent == null ? 'disabled' : ''}>${I18N.tr('返回上一级')}</button><button type="button" data-computer-root>${I18N.tr('根目录')}</button></div><p id="computerFileStatus" class="hint${state.error ? ' err' : ''}" role="status">${esc(I18N.tr(state.message))}</p>${rows || (!state.message ? `<div class="hint">${I18N.tr('此目录暂无可显示的文件')}</div>` : '')}`);
+  $('sheet').scrollTop = state.scroll;
+  if (selection) { $('computerFilePath').focus(); $('computerFilePath').setSelectionRange(...selection); }
+}
 function cancelDocs() {
   docsPending = null;
   editorBrowsing = false;
@@ -589,24 +645,57 @@ function foldSection(name, inner, open, count, key) {
 function agentFilterSlider(filters) {
   return `<div class="agentSessionFilter${filters.session === 'common' ? ' common' : ''}" role="group" aria-label="会话筛选">${Object.entries(agentFilterLabels).map(([value, text]) => `<button type="button" aria-pressed="${filters.session === value}" data-agent-filter-value="${value}">${text}</button>`).join('')}</div>`;
 }
-function showAgentActions(id, title, actions = null) {
-  const current = (agentLists.get(agentListKey()) || []).find(a => a.id === id);
-  const codexThread = currentAppName === 'Codex' && String(id).startsWith('thread:');
-  const favorite = agentFavoriteState(id);
+function showAgentActions(id, title, actions = null, target = null) {
+  agentActionTarget = target;
+  const current = !target && (agentLists.get(agentListKey()) || []).find(a => a.id === id);
+  const codexThread = (target ? target.app === 'codex' : currentAppName === 'Codex') && String(id).startsWith('thread:');
+  const favorite = target ? target.favorite : agentFavoriteState(id);
+  const disabled = target?.off ? ' disabled' : '';
+  const nativeDisabled = target?.off || target?.dormant ? ' disabled' : '';
   const rows = [
-    current?.current ? '' : `<button class="opt" data-agent-action="open" data-agent-action-id="${esc(id)}" data-agent-action-title="${esc(title)}"><span class="lbl">打开会话</span></button>`,
-    `<button class="opt" data-agent-action="favorite" data-agent-action-id="${esc(id)}"><span class="lbl">${favorite ? '取消常用' : '设置为常用'}</span></button>`,
-    ...(actions || (codexThread ? ['rename', 'archive'] : [])).map(action => `<button class="opt" data-agent-action="${action}" data-agent-action-id="${esc(id)}" data-agent-action-title="${esc(title)}"><span class="lbl">${action === 'rename' ? '重命名' : action === 'delete' ? '删除' : codexThread ? '删除／归档' : '归档'}</span></button>`),
-    actions === null && !codexThread ? '<div class="hint">正在读取会话操作…</div>' : '',
+    current?.current ? '' : `<button class="opt" data-agent-action="open" data-agent-action-id="${esc(id)}" data-agent-action-title="${esc(title)}"${target?.dormant && !target.workspace ? ' disabled' : ''}><span class="lbl">打开会话</span></button>`,
+    `<button class="opt" data-agent-action="favorite" data-agent-action-id="${esc(id)}"${disabled}><span class="lbl">${target ? favorite ? '取消收藏' : '收藏' : favorite ? '取消常用' : '设置为常用'}</span></button>`,
+    codexThread ? `<button class="opt" data-agent-action="copyLink" disabled aria-busy="${!target?.off}"><span class="lbl">复制会话链接</span></button>` : '',
+    ...(actions || (codexThread ? ['rename', 'archive'] : [])).map(action => `<button class="opt" data-agent-action="${action}" data-agent-action-id="${esc(id)}" data-agent-action-title="${esc(title)}"${nativeDisabled}><span class="lbl">${action === 'rename' ? '重命名' : action === 'delete' ? '删除' : codexThread ? '删除／归档' : '归档'}</span></button>`),
+    target?.off ? '<div class="hint">电脑离线，连接后可管理会话</div>' : target?.dormant ? '<div class="hint">项目窗口已关闭，打开对话后可重命名或归档／删除</div>' : actions === null && !codexThread ? '<div class="hint">正在读取会话操作…</div>' : '',
   ].filter(Boolean).join('');
-  openSheet('agent-actions', `<h3>${esc(title)}</h3>${rows || '<div class="hint">没有可用操作。</div>'}`);
-  if (actions === null && !codexThread) {
+  const owner = target ? `<div class="hint">${esc(ovCompName(target.comp))} · ${esc(target.projName)} · ${esc(ovAgName(target))}</div>` : '';
+  openSheet('agent-actions', `<h3>${esc(title)}</h3>${owner}${rows || '<div class="hint">没有可用操作。</div>'}`);
+  if (codexThread && !target?.off) {
+    const requestId = ++agentActionRequest;
+    const copyTarget = target || { comp: currentComputer().id, win: 'codex', windowId: id.split(':')[1], threadId: agentThreadKey({ id }, 'codex') };
+    const active = () => sheetKind === 'agent-actions' && agentActionTarget === target && agentActionRequest === requestId;
+    ovSessionRequest(copyTarget, 'copyLink').then(value => {
+      if (!active()) return;
+      const button = $('sheet').querySelector('[data-agent-action="copyLink"]');
+      button.dataset.copyLink = value.text;
+      button.disabled = false;
+      button.removeAttribute('aria-busy');
+    }).catch(error => {
+      if (!active()) return;
+      $('sheet').querySelector('[data-agent-action="copyLink"]').removeAttribute('aria-busy');
+      $('sheet').insertAdjacentHTML('beforeend', `<div class="hint">${esc(error.message)}</div>`);
+    });
+  }
+  if (actions === null && !codexThread && !target?.off && !target?.dormant) {
+    if (target) {
+      const requestId = ++agentActionRequest;
+      const active = () => sheetKind === 'agent-actions' && agentActionTarget === target && agentActionRequest === requestId;
+      ovSessionRequest(target, 'actions').then(message => {
+        if (active()) showAgentActions(id, title, message.actions, target);
+      }).catch(error => {
+        if (!active()) return;
+        showAgentActions(id, title, [], target);
+        $('sheet').insertAdjacentHTML('beforeend', `<div class="hint">${esc(error.message)}</div>`);
+      });
+      return;
+    }
     pendingAgentActions = { id, title, requestId: ++agentActionRequest };
     send({ t: 'sessionActions', id, requestId: agentActionRequest });
   }
 }
 function receiveAgentActions(message) {
-  if (sheetKind !== 'agent-actions' || message.app !== currentApp || message.requestId !== agentActionRequest) return;
+  if (agentActionTarget || sheetKind !== 'agent-actions' || message.app !== currentApp || message.requestId !== agentActionRequest) return;
   if (pendingAgentActions?.id === message.id) showAgentActions(message.id, pendingAgentActions.title, message.actions);
 }
 function renderAgentList() {
@@ -680,6 +769,13 @@ function showAgents(list) {
 $('sheet').addEventListener('click', async e => {
   const b = e.target.closest('button');
   if (!b) return;
+  if (sheetKind === 'main' && b.dataset.startView) {
+    store.set('start-view', b.dataset.startView);
+    const slider = b.closest('.agentSessionFilter');
+    slider.classList.toggle('common', b.dataset.startView === 'conversation');
+    slider.querySelectorAll('[data-start-view]').forEach(option => option.setAttribute('aria-pressed', String(option === b)));
+    return;
+  }
   if (sheetKind === 'project-windows') {
     const change = { ...(b.dataset.windowKey ? { window: b.dataset.windowKey } : {}) };
     for (const field of ['enabled', 'owned', 'keep']) if (b.hasAttribute('data-window-' + field)) change[field] = b.getAttribute('data-window-' + field) === '1';
@@ -1021,16 +1117,20 @@ function showDocs(m) {
   openSheet('docs', `<h3>${heading}</h3>${back}<div class="hint">${esc(m.name || '')}${m.path ? ' · ' + esc(m.path) : ''}</div>${up}${folders}${divider}${docs}${code}${files}${empty}`);
 }
 function showProjects(m) {
+  const context = computerProjects ? `<p class="hint">${esc(currentComputer().name)} · ${esc(currentAppName)}</p>` : '';
   const pathInput = '<button class="opt" data-project-path><span class="lbl">输入文件夹路径</span></button>';
   const drives = (m.drives || []).map(p => `<button class="opt" data-dir="${esc(p)}"><span class="lbl">${esc(p)}</span></button>`).join('');
   if (!m.browsing) {
-    const rows = (m.recent || []).map(p => `<button class="opt" data-open="${esc(p.path)}"><span class="lbl">${esc(p.name)}<span class="sub">${esc(p.path)}</span></span></button>`).join('');
-    openSheet('projects', `<h3>打开项目</h3>${rows || '<div class="hint">还没有最近打开的本地项目。</div>'}<button class="opt" data-dir="${esc(m.path)}"><span class="lbl">浏览文件夹</span></button>${pathInput}${drives}`);
+    const rows = (m.recent || []).map(p => {
+      const open = `<button class="opt" data-open="${esc(p.path)}"><span class="lbl">${esc(p.name)}<span class="sub">${esc(p.path)}</span></span></button>`;
+      return computerProjects ? `<div class="optRow">${open}<button class="opt computerProjectNew" data-project-chat="${esc(p.path)}">${I18N.tr('新建会话')}</button></div>` : open;
+    }).join('');
+    openSheet('projects', `<h3>打开项目</h3>${context}${rows || '<div class="hint">还没有最近打开的本地项目。</div>'}<button class="opt" data-dir="${esc(m.path)}"><span class="lbl">浏览文件夹</span></button>${pathInput}${drives}`);
     return;
   }
   const up = m.parent ? `<button class="opt" data-dir="${esc(m.parent)}"><span class="lbl">上级目录</span></button>` : '';
   const dirs = (m.dirs || []).map(d => `<button class="opt" data-dir="${esc(d.path)}"><span class="lbl">${esc(d.name)}</span></button>`).join('');
-  openSheet('projects', `<h3>浏览文件夹</h3><div class="hint">${esc(m.path)}</div><button class="opt" data-open="${esc(m.path)}"><span class="lbl">打开此文件夹</span></button><button class="opt" data-project-chat="${esc(m.path)}"><span class="lbl">在此项目新建会话</span></button><button class="opt" data-project-new="${esc(m.path)}"><span class="lbl">新建项目并创建会话</span></button>${pathInput}${up}${drives}${dirs || '<div class="hint">没有子文件夹。</div>'}`);
+  openSheet('projects', `<h3>浏览文件夹</h3>${context}<div class="hint">${esc(m.path)}</div><button class="opt" data-open="${esc(m.path)}"><span class="lbl">打开此文件夹</span></button><button class="opt" data-project-chat="${esc(m.path)}"><span class="lbl">在此项目新建会话</span></button><button class="opt" data-project-new="${esc(m.path)}"><span class="lbl">新建项目并创建会话</span></button>${pathInput}${up}${drives}${dirs || '<div class="hint">没有子文件夹。</div>'}`);
 }
 function showCodexSettings(m) {
   const button = c => `<button class="paramBtn ${c.on || c.current ? 'cur' : ''}" data-codex-setting="${esc(c.id)}" ${c.disabled ? 'disabled' : ''}>${esc(c.label)}</button>`;
@@ -1065,12 +1165,24 @@ function meterFill(pct, basis) {
   const warm = basis === 'remaining' ? pct <= 25 : pct >= 75;
   return tight ? 'hot' : warm ? 'warm' : '';
 }
+const meterPercent = pct => pct == null ? null : Math.max(0, Math.min(100, Number(pct)));
+const contextMeterScope = () => [currentComputer()?.id || '', viewSel].join('|');
 let contextInfo = null, quotaInfo = null;
+let contextMeterOwner = '', quotaMeterOwner = '';
+function quotaMeterData(m) {
+  return fusionUsageBars(m).filter(b => b?.label && !/^loading\b/i.test(String(b.label)))
+    .map(b => ({ ...b, pct: meterPercent(b.pct), basis: b.basis || 'used' }));
+}
+function currentUsageMeters() {
+  return { context: contextMeterOwner === contextMeterScope() ? contextInfo : null,
+    quota: quotaMeterOwner === quotaKey() && !quotaInfo.missing ? quotaMeterData(quotaInfo) : [] };
+}
 function renderContext(info) {
   const basis = info && typeof info === 'object' ? (info.basis || 'used') : 'used';
   const pct = info == null ? null : typeof info === 'object' ? info.pct : info;
-  const n = pct == null || pct === '' ? null : Math.max(0, Math.min(100, Number(pct)));
+  const n = meterPercent(pct === '' ? null : pct);
   contextInfo = { pct: n, basis };
+  contextMeterOwner = contextMeterScope();
   $('meterCtxPct').textContent = n == null ? '未获取' : (basis === 'remaining' ? '剩余' : '已用') + n + '%';
   const fill = $('meterCtxFill');
   fill.style.width = (n ?? 0) + '%';
@@ -1080,6 +1192,7 @@ function renderContext(info) {
   $('meterCtx').title = '上下文 · ' + (basis === 'remaining' ? '剩余' : '已用') + ' ' + (n ?? '–') + '%';
   $('meterCtx').setAttribute('aria-label', $('meterCtx').title);
   $('meterCtx').onclick = () => showUsageDetails('context');
+  document.dispatchEvent(new Event('usage-state'));
 }
 // Phones show the value text ("已用 56%") beside each ring whenever every meter fits that way next to
 // a readable title; otherwise the number moves inside the ring. Measured, so fonts/languages don't matter.
@@ -1111,9 +1224,10 @@ function renderQuota(m) {
     return;
   }
   quotaInfo = m;
+  quotaMeterOwner = quotaKey();
   if (!m.missing && !m.loading) quotaCache.set(quotaKey(), m);
-  const bars = fusionUsageBars(m)
-    .filter(b => b?.label && !/^loading\b/i.test(String(b.label)));
+  const bars = quotaMeterData(m);
+  document.dispatchEvent(new Event('usage-state'));
   $('quotaMeters').classList.toggle('devinLimits', currentApp === 'devin' && bars.length > 1);
   const when = m.updated ? new Date(m.updated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
   if (m.missing) {
@@ -1131,8 +1245,8 @@ function renderQuota(m) {
   const reset = [...new Set(bars.map(b => b.reset).filter(Boolean))].join(' · ') || (m.lines || []).find(l => /reset/i.test(l)) || '';
   $('quotaMeters').title = [reset, when ? `更新于 ${when}` : ''].filter(Boolean).join(' · ');
   $('quotaMeters').innerHTML = bars.map(b => {
-    const basis = b.basis || 'used';
-    const n = b.pct == null ? null : Math.max(0, Math.min(100, Number(b.pct)));
+    const basis = b.basis;
+    const n = b.pct;
     const num = n == null ? (b.value ?? '未获取') : (basis === 'remaining' ? '剩余' : '已用') + `${n}%`;
     const label = /week|每周|周额度/i.test(b.label) ? '周额度' : /daily|每日|日额度/i.test(b.label) ? '日额度' : b.label;
     return `<button class="meter" type="button" title="${esc(b.label + ' · ' + basis + ' · ' + (b.reset || ''))}" aria-label="${esc(b.label + ' ' + num)}"><span class="track" style="--pct:${n ?? 0}" data-n="${n == null ? '' : Math.round(n)}"><i class="${meterFill(n, basis)}" style="width:${n ?? 0}%"></i></span><span class="meterText"><span class="meterLabel">${esc(label)}</span><b>${esc(String(num))}</b></span></button>`;
@@ -1176,6 +1290,40 @@ $('sheet').addEventListener('change', e => {
   store.set('agent-start:' + agentComputerKey(), JSON.stringify([...selected]));
   showAgentManager();
 });
+let connectionDetailsComputer = '';
+function connectionHistoryText(record) {
+  if (!record) return '';
+  const tr = I18N.tr, closed = record.closed, foreground = record.foreground;
+  const time = event => event ? new Date(event.at).toISOString() : tr('未记录');
+  const environment = event => `${tr(event.visibility === 'visible' ? '前台' : '后台')} · ${tr(event.online ? '网络在线' : '网络离线')} · ${event.phase} · Socket ${event.socketState}`;
+  return [
+    `${tr('关闭时间')}：${time(closed)}`,
+    `${tr('关闭码')}：${closed.code} · ${tr('客户端来源')}：${closed.source}`,
+    `${tr('关闭时')}：${environment(closed)} · ${tr(closed.current ? '当前电脑' : '其他电脑')}`,
+    `${tr('后台计时')}：${closed.backgroundAt == null ? tr('未启动') : `${closed.at - closed.backgroundAt} ms`}`,
+    `${tr('关闭前连接认证')}：${tr(closed.authed ? '已验证' : '未验证')} · ${tr('当前页面认证')}：${tr(closed.activeAuthed ? '已验证' : '未验证')}`,
+    `${tr('回到前台')}：${time(foreground)}${foreground ? `\n${environment(foreground)} · ${tr('当前页面认证')}：${tr(foreground.activeAuthed ? '已验证' : '未验证')}` : ''}`,
+    `${tr('重连请求')}：${time(record.reconnect)}${record.reconnect ? ` · ${record.reconnect.source}` : ''}`,
+    `${tr('新建连接')}：${time(record.socket)}`,
+    `${tr('认证成功')}：${time(record.authenticated)}${record.authenticated ? ` · ${tr(record.authenticated.resumed ? '复用中继会话' : '新建中继会话')}` : ''}`,
+    `${tr('会话可用')}：${time(record.ready)}`,
+  ].join('\n');
+}
+function showConnectionDetails(id) {
+  const e = ovList.find(e => e.id === id);
+  if (!e?.c) return;
+  connectionDetailsComputer = id;
+  const state = ovStOf(id), tr = I18N.tr, failure = state.failure;
+  const checks = (state.checks || []).map(c => `<div class="connection-check"><span>${esc(tr(c.label))}</span><span class="${c.st}">${esc(tr(DIAG_TEXT[c.st]))}</span></div>`).join('');
+  const technical = [failure?.stage, failure?.error, ...(state.checks || []).filter(c => c.st === 'err').map(c => tr(c.label) + '：' + diagReason(c))].filter(Boolean).join('\n');
+  const history = connectionHistoryText(state.link?.lastClose);
+  openSheet('connection-details', `<h3>连接详情</h3><p class="hint ovRaw">${esc(e.name)}</p>
+    <p class="hint">${esc(tr(state.diagRunning ? '正在检测连接…' : state.conclusion || '连接未建立，请重试。'))}</p>
+    ${checks}${technical ? `<pre class="connection-technical">${esc(technical)}</pre>` : ''}
+    ${history ? `<div class="pSec">${tr('最近一次关闭与恢复')}</div><pre class="connection-technical" data-connection-history>${esc(history)}</pre><p class="hint">${tr('transport 表示未记录到客户端主动关闭来源，需结合中继日志判断。记录仅保留到本页关闭或刷新。')}</p>` : ''}
+    <div class="optRow"><button class="opt" data-act="connectionRetry" data-computer="${esc(id)}">重新连接</button><button class="opt" data-act="connectionDiagnose" data-computer="${esc(id)}" ${state.diagRunning ? 'disabled' : ''}>重新检测</button></div>`);
+}
+
 function showAgentManager(refresh = false) {
   if (refresh) {
     send({ t: 'connAgents' });
@@ -1201,10 +1349,13 @@ function showAgentManager(refresh = false) {
 
 let usageTimer = null;
 function showMainMenu() {
+  const startConversation = store.get('start-view') === 'conversation';
+  const entryItem = `<div class="opt"><span class="lbl">默认进入<span class="sub">下次打开或刷新生效</span></span><div class="agentSessionFilter${startConversation ? ' common' : ''}" style="width:176px;max-width:70%;margin:0" role="group" aria-label="${esc(I18N.tr('默认进入'))}"><button type="button" data-start-view="overview" aria-pressed="${!startConversation}" style="padding:4px 2px">${I18N.tr('缩略图')}</button><button type="button" data-start-view="conversation" aria-pressed="${startConversation}" style="padding:4px 2px">${I18N.tr('会话内容')}</button></div></div>`;
+  const manageItem = !document.body.classList.contains('conv') && ovS.level !== 'projects'
+    ? '<button class="opt" data-act="overviewBatch"><span class="lbl">批量管理会话</span></button>' : '';
   const notifyItem = `<button class="opt" id="notifySwitchRow" data-act="notifyToggle" role="switch" aria-checked="${notifyOn}"><span class="lbl">开启通知<span class="sub">Agent 完成或等你确认时提醒</span></span><span class="switch${notifyOn ? ' on' : ''}" aria-hidden="true"></span></button>`;
-  const partialOn = connAutoPartialOn(), autoLaunchOn = store.get('conn-auto-launch') === '1';
-  const connItems = `<button class="opt" id="menuPartialRow" data-act="connPartialToggle" role="switch" aria-checked="${partialOn}"><span class="lbl">部分失败时直接进入<span class="sub">连接电脑时，只要有一个 Agent 可用就自动进入</span></span><span class="switch${partialOn ? ' on' : ''}" aria-hidden="true"></span></button>`
-    + `<button class="opt" id="menuLaunchRow" data-act="connLaunchToggle" role="switch" aria-checked="${autoLaunchOn}"><span class="lbl">自动启动未打开的 Agent<span class="sub">连接电脑时自动启动没有运行的 Agent</span></span><span class="switch${autoLaunchOn ? ' on' : ''}" aria-hidden="true"></span></button>`;
+  const autoLaunchOn = store.get('conn-auto-launch') === '1';
+  const connItems = `<button class="opt" id="menuLaunchRow" data-act="connLaunchToggle" role="switch" aria-checked="${autoLaunchOn}"><span class="lbl">自动启动未打开的 Agent<span class="sub">连接电脑时自动启动没有运行的 Agent</span></span><span class="switch${autoLaunchOn ? ' on' : ''}" aria-hidden="true"></span></button>`;
   const update = apkUpdate()
     ? `<button class="opt" data-act="appUpdate"><span class="lbl">更新安卓 App（v${esc(appVersion)} → v${esc(apkUpdate())}）</span><span class="tag">新</span></button>`
     : `<button class="opt" data-act="appUpdate"><span class="lbl">检查 App 更新（当前 v${esc(appVersion)}）</span></button>`;
@@ -1214,7 +1365,7 @@ function showMainMenu() {
     ${currentApp === 'cursor' && lastChat?.mode ? `<button class="opt" data-act="mode"><span class="lbl">${I18N.tr('模式')}<span class="sub">${esc(lastChat.mode === 'Bypass Permissions' ? '⚠ 绕过权限' : lastChat.mode)}</span></span></button>` : ''}
     ${lastChat?.permission || (currentApp === 'devin' && lastChat?.mode) ? `<button class="opt" data-act="permission"><span class="lbl">权限模式<span class="sub">${esc(lastChat.permission || lastChat.mode)}</span></span></button>` : ''}
     <button class="opt" data-act="screen"><span class="lbl">画面<span class="sub">查看绘图与仿真窗口</span></span></button>
-    ${currentApp === 'codex' ? '<button class="opt" data-act="codexResetHelp"><span class="lbl">Codex 额度重置</span></button><button class="opt" data-act="codexRetryMenu"><span class="lbl">Codex 自动重试<span class="sub">' + (codexAutoRetryEnabled() ? `已开启 · 最多 ${codexAutoRetryCount()} 次` : '已关闭') + '</span></span><span class="tag">›</span></button>' : ''}
+    ${currentApp === 'codex' ? '<button class="opt" data-act="codexRetryMenu"><span class="lbl">Codex 自动重试<span class="sub">' + (codexAutoRetryEnabled() ? `已开启 · 最多 ${codexAutoRetryCount()} 次` : '已关闭') + '</span></span><span class="tag">›</span></button>' : ''}
     ${supportsCapability('settings') ? '<button class="opt" data-act="settings"><span class="lbl">设置</span></button>' : ''}
     ${['cursor', 'devin', 'codex', 'fusion'].includes(currentApp) ? `<button class="opt" data-act="executionToggle" role="switch" aria-checked="${executionRecordsShown()}"><span class="lbl">显示执行指令<span class="sub">包含工具读取和搜索记录；关闭后在本轮结束时隐藏</span></span><span class="switch${executionRecordsShown() ? ' on' : ''}" aria-hidden="true"></span></button>` : ''}
     ${lastChat?.changed && !lastChat?.readonly ? `<button class="opt" data-act="toggleChanges"><span class="lbl">${hiddenChangeNotices.has(changeNoticeKey()) ? '显示改动' : '隐藏改动提示'}</span></button>` : ''}`;
@@ -1232,9 +1383,9 @@ function showMainMenu() {
     ${inApp && window.AgentRemoteApp?.listenStatus ? '<button class="opt" data-act="bg"><span class="lbl">后台连接<span class="sub">状态、电池优化、立即重连</span></span></button>' : ''}
     <button class="opt" data-act="cache"><span class="lbl">会话缓存<span class="sub">手机上保存的对话记录，可折叠、可清除</span></span></button>
     <button class="opt" data-act="lang"><span class="lbl">语言 / Language<span class="sub">中文 · English（${I18N.lang === 'en' ? 'English' : '中文'}）</span></span></button>`;
-  openSheet('main', `<div class="mainMenuHeader"><h3>菜单</h3><div class="mainMenuActions"><button class="menuHeaderAction" data-act="transfer" aria-label="${esc(I18N.tr('文件传输'))}" title="${esc(I18N.tr('文件传输'))}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 16V4m0 0L3 8m4-4 4 4M17 8v12m0 0 4-4m-4 4-4-4"/></svg></button><button class="menuHeaderAction" data-act="localVoiceMenu" aria-label="${esc(I18N.tr('语音输入'))}" title="${esc(I18N.tr('语音输入'))}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button><button class="menuHeaderAction menuComputer" data-act="computers" aria-label="${esc(I18N.tr('电脑'))}" title="${esc(I18N.tr('电脑'))}">${CONN_HOST_SVG}</button></div></div>${document.body.classList.contains('conv') ? menuGroup('model', '模型', (appName ? `<div class="pSec">${esc(appName)}</div>` : '') + modelItems) : ''}
+  openSheet('main', `<div class="mainMenuHeader"><h3>菜单</h3><div class="mainMenuActions"><button class="menuHeaderAction" data-act="transfer" aria-label="${esc(I18N.tr('文件传输'))}" title="${esc(I18N.tr('文件传输'))}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 16V4m0 0L3 8m4-4 4 4M17 8v12m0 0 4-4m-4 4-4-4"/></svg></button><button class="menuHeaderAction" data-act="localVoiceMenu" aria-label="${esc(I18N.tr('语音输入'))}" title="${esc(I18N.tr('语音输入'))}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button><button class="menuHeaderAction menuComputer" data-act="computers" aria-label="${esc(I18N.tr('电脑'))}" title="${esc(I18N.tr('电脑'))}">${CONN_HOST_SVG}</button></div></div>${entryItem}${manageItem}${document.body.classList.contains('conv') ? menuGroup('model', '模型', (appName ? `<div class="pSec">${esc(appName)}</div>` : '') + modelItems) : ''}
     ${menuGroup('general', '通用', menuGroup('connection', 'Agent 与连接', connectionItems, false)
-      + menuGroup('settings', '应用设置与帮助', settingsItems, false))}`);
+      + menuGroup('settings', '应用设置与帮助', settingsItems, false))}<p class="hint">网页版本 ${esc(APP_VERSION)}</p>`);
 }
 $('menuBtn').onclick = showMainMenu;
 

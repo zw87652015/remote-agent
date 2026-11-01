@@ -34,6 +34,31 @@ const scReq = (mode, fn) => scDb().then(db => new Promise((res, rej) => {
 })).catch(() => null);
 const idbGet = k => scReq('readonly', s => s.get(k));
 const idbPut = (k, v) => scTrackWrite(k, scReq('readwrite', s => s.put(v, k)));
+let chatPreviewTimer = 0, chatPreviewDirty = false, computerResumeDirty = false, computerResumeAt = 0;
+const computerResumes = new Map();
+const computerResumeReady = idbGet('computer-resumes').then(saved => {
+  for (const [id, value] of saved?.entries || []) {
+    if (loadComputers().some(c => c.id === id)) computerResumes.set(id, value);
+  }
+  if (saved && Date.now() - saved.at < 5 * 60 * 1000) ovRestoreComputers(saved);
+});
+function saveComputerResume(link) {
+  if (computerSockets.get(link.computer.key) !== link || !link.auth?.resumeId || !computerBindingReady(link)) return;
+  const foreground = link.socket === ws && !!link.receive;
+  const { chat, ...binding } = link.binding;
+  computerResumes.set(link.expectedId, {
+    resumeId: link.auth.resumeId, binding,
+    overview: ovSt.get(link.expectedId)?.data,
+    offset: ovSt.get(link.expectedId)?.offset || 0,
+  });
+  if (!foreground) cacheChat(binding.sel, chat, link.expectedId);
+  return saveComputerResumes();
+}
+function saveComputerResumes() {
+  computerResumeDirty = true;
+  computerResumeAt = Date.now();
+  schedulePreviewSave();
+}
 const chatCacheKey = sel => `${currentComputer()?.id || ''}|${sel}`;
 const chatPreviewGeneration = scGeneration, chatPreviewVersions = new Map(scVersions);
 const chatPreviewReady = idbGet('chat-previews').then(entries => {
@@ -44,27 +69,44 @@ const chatPreviewReady = idbGet('chat-previews').then(entries => {
   }
   if (filtered && chatBySel.size) saveChatPreview();
 });
-let chatPreviewTimer = 0;
 function chatTail(items, limit) {
   const start = Math.max(0, items.length - limit);
   const head = items.slice(0, start).findLast(it => it.k === 'human');
   return [...(head ? [head] : []), ...items.slice(start)];
 }
-function cacheChat(sel, chat) {
-  const key = chatCacheKey(sel);
+function cacheChat(sel, chat, computer = currentComputer()?.id || '') {
+  const key = `${computer}|${sel}`;
+  const changed = chatBySel.get(key) !== chat;
   lruPut(chatBySel, key, chat, 12);
   if (key === SC.key) SC.cleared = false;
-  saveChatPreview();
+  if (changed) saveChatPreview();
 }
 function saveChatPreview() {
+  chatPreviewDirty = true;
+  schedulePreviewSave();
+}
+function schedulePreviewSave() {
   if (!chatPreviewTimer) chatPreviewTimer = setTimeout(function savePreview() {
     if (scClears.size || chatScrolling || chatTouching) { chatPreviewTimer = setTimeout(savePreview, 250); return; }
-    chatPreviewTimer = 0;
+    flushPreviewSaves();
+  }, 1000);
+}
+function flushPreviewSaves() {
+  clearTimeout(chatPreviewTimer); chatPreviewTimer = 0;
+  if (computerResumeDirty) {
+    computerResumeDirty = false;
+    const ids = new Set(loadComputers().map(c => c.id));
+    for (const id of computerResumes.keys()) if (!ids.has(id)) computerResumes.delete(id);
+    for (const [id, value] of computerResumes) value.folded = !!ovSt.get(id)?.folded && ovCollapsed.has(id);
+    idbPut('computer-resumes', { at: computerResumeAt, entries: [...computerResumes], view: ovHistory() });
+  }
+  if (chatPreviewDirty && !scClears.size) {
+    chatPreviewDirty = false;
     idbPut('chat-previews', [...chatBySel].map(([key, value]) => {
       const items = chatTail(value.items, 400);
       return [key, { ...value, items, earlier: items.length < value.items.length || value.earlier }];
     }));
-  }, 1000);
+  }
 }
 let chatFrame = 0, queuedChat = null, chatRenderEpoch = 0;
 function invalidateChatRender() {
@@ -199,8 +241,8 @@ function scDirty() {
   SC.dirty = true;
   if (!SC.timer) SC.timer = setTimeout(scFlush, 3000);
 }
-document.addEventListener('visibilitychange', () => { if (document.hidden) { scFlush(); scDrain(true); } });
-addEventListener('pagehide', () => { scFlush(); scDrain(true); });
+document.addEventListener('visibilitychange', () => { if (document.hidden) { scFlush(); scDrain(true); flushPreviewSaves(); } });
+addEventListener('pagehide', () => { scFlush(); scDrain(true); flushPreviewSaves(); });
 function scSwitch(sess) {
   scFlush();
   SC.key = sess ? scKeyFor(sess) : null;
@@ -303,6 +345,7 @@ async function scClear(key) {
   clearTimeout(scDrainTimer); scDrainTimer = 0;
   if (scSaveFrame) { cancelAnimationFrame(scSaveFrame); scSaveFrame = 0; }
   clearTimeout(chatPreviewTimer); chatPreviewTimer = 0;
+  chatPreviewDirty = false;
   for (const pending of scPending.keys()) if (matches(pending)) scPending.delete(pending);
   for (const cached of chatBySel.keys()) if (matches(cached)) chatBySel.delete(cached);
   for (const title of Object.keys(scTitles)) if (matches(title)) delete scTitles[title];
@@ -323,6 +366,7 @@ async function scClear(key) {
   } finally {
     scClears.delete(clear);
     if (chatBySel.size) saveChatPreview();
+    else if (computerResumeDirty) schedulePreviewSave();
     scFlush(); scDrain();
   }
 }
@@ -887,7 +931,12 @@ $('taskChip').onclick = () => showTasks();
 itemsEl.addEventListener('toggle', e => { const id = e.target.dataset.task; if (id) e.target.open ? taskOpen.add(id) : taskOpen.delete(id); }, true);
 $('qnBar').addEventListener('click', e => {
   const compose = e.target.closest('[data-question-compose]');
-  if (compose) { setQuestionCompose(compose.dataset.questionCompose); text.focus(); return; }
+  if (compose) {
+    setQuestionCompose(compose.dataset.questionCompose);
+    if (portraitComposer()) setComposerFold(false);
+    text.focus();
+    return;
+  }
   const b = e.target.closest('[data-action][data-request]');
   if (b) {
     const id = b.dataset.request, n = Number(b.dataset.action);
@@ -901,10 +950,12 @@ $('qnBar').addEventListener('click', e => {
 let qnSig = '', qnState = null, qnView = '', qnPending = null;
 const qnDrafts = new Map();
 const questionFieldKey = el => `${el.dataset.request}|${el.dataset.field}`;
+const questionCard = (head, body, open) => `<details class="qnCard" ${open ? 'open' : ''}><summary class="qnHead"><span class="qnHeading">${head}</span><svg class="arrowIcon qnFold" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary><div class="qnBody">${body}</div></details>`;
 function questionBusy() {
   const bar = $('qnBar');
   bar.setAttribute('aria-busy', String(!!qnPending));
   if (qnPending) bar.querySelectorAll('button,input,select').forEach(el => { el.disabled = true; });
+  updateComposeCompact();
 }
 function sendQuestion(message) {
   if (qnPending) return;
@@ -919,28 +970,10 @@ function setQuestionCompose(id) {
   if (questionCompose?.id === id && questionCompose.sel === viewSel || !questionCompose && !id) return;
   if (mode !== 'chat') { questionCompose = id ? { id, sel: viewSel } : null; updateAppText(); updateSendMode(); return; }
   saveDraft();
-  const carry = !questionCompose && mode === 'chat' ? text.value : '';
   questionCompose = id ? { id, sel: viewSel } : null;
   restoreDraft();
-  if (id && !drafts.has(activeDraft)) {
-    text.value = qnDrafts.get(`${id}|0`) ?? qnState?.requests?.find(r => r.id === id)?.fields[0]?.value ?? '';
-    if (!text.value) text.value = carry;
-    syncQuestionDraft(text.value);
-    autosize(); saveDraft();
-  }
   updateAppText();
   updateSendMode();
-}
-function syncQuestionDraft(value) {
-  if (mode !== 'chat' || questionCompose?.sel !== viewSel) return;
-  qnDrafts.set(`${questionCompose.id}|0`, value);
-  const field = [...$('qnBar').querySelectorAll('[data-field="0"]')].find(el => el.dataset.request === questionCompose.id);
-  if (field) {
-    field.value = value;
-    const request = qnState?.requests?.find(r => r.id === questionCompose.id);
-    const submit = [...$('qnBar').querySelectorAll('[data-action]')].find(el => el.dataset.request === questionCompose.id && Number(el.dataset.action) === request.buttons.length - 1);
-    if (submit) submit.disabled = !!qnPending || request.buttons.every(b => b.disabled) || !value.trim();
-  }
 }
 function submitQuestionCompose() {
   const request = qnState?.requests?.find(r => r.id === questionCompose?.id);
@@ -980,6 +1013,10 @@ function finishQuestion(m) {
 function renderQuestions(qs) {
   const bar = $('qnBar');
   if (qs?.codex && currentApp !== 'codex') qs = null;
+  const keys = value => value?.codex ? value.requests.map(r => r.id)
+    : (value?.list || []).map(q => JSON.stringify([!!value.devin, value.pager?.cur, q.text]));
+  const known = new Set(keys(qnState));
+  const open = qnView !== viewSel || keys(qs).some(key => !known.has(key)) || bar.querySelector('.qnCard')?.open !== false;
   if (qnView !== viewSel) { qnView = viewSel; qnSig = ''; qnPending = null; qnDrafts.clear(); }
   if (qnPending && (qnPending.message.id ? !qs?.requests?.some(r => r.id === qnPending.message.id) : !qs?.list?.length)) {
     qnPending = null;
@@ -997,15 +1034,15 @@ function renderQuestions(qs) {
     const focused = bar.contains(document.activeElement) ? document.activeElement : null;
     const focusKey = focused?.matches('[data-field]') ? questionFieldKey(focused) : null;
     const selection = focusKey ? [focused.selectionStart, focused.selectionEnd] : null;
-    const expanded = new Set([...bar.querySelectorAll('details[open]')].map(el => el.dataset.question));
-    bar.innerHTML = `<div class="qnHead">Codex 等待你${qs.requests.some(r => r.id.startsWith('approval:')) ? '审批' : '回答'}<span class="qnCount">${qs.requests.length} 个请求</span></div>` + qs.requests.map(r => {
+    const expanded = new Set([...bar.querySelectorAll('.qnDetails[open]')].map(el => el.dataset.question));
+    bar.innerHTML = questionCard(`Codex 等待你${qs.requests.some(r => r.id.startsWith('approval:')) ? '审批' : '回答'}<span class="qnCount">${qs.requests.length} 个请求</span>`, qs.requests.map(r => {
       const lines = r.text.trim().split('\n'), heading = lines.shift();
       const remaining = lines.join('\n').trim();
       return `<section class="qnRequest"><div class="qnQ">${esc(heading)}</div>`
       + (remaining ? `<details class="qnDetails" data-question="${esc(r.id)}" ${expanded.has(r.id) ? 'open' : ''}><summary>展开问题详情</summary>${esc(remaining)}</details>` : '')
       + (r.id.startsWith('async:') ? `<div class="qnOpts">${r.buttons.slice(0, -2).map((b, n) => `<button class="qnOpt ${b.selected ? 'on' : ''}" data-request="${esc(r.id)}" data-action="${n}" aria-pressed="${!!b.selected}" ${b.disabled ? 'disabled' : ''}>${esc(b.label)}</button>`).join('')}</div>` : '')
       + r.fields.map((f, n) => `<label class="qnFree">${esc(f.label)}${f.options ? `<select data-request="${esc(r.id)}" data-field="${n}">${f.options.map(o => `<option value="${esc(o.value)}" ${o.value === f.value ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}</select>` : `<input data-request="${esc(r.id)}" data-field="${n}" type="${f.type === 'password' ? 'password' : 'text'}" value="${esc(f.value)}">`}</label>`).join('')
-      + `<div class="qnAct">${r.id.startsWith('async:') ? `<button data-question-compose="${esc(r.id)}">在对话框回答</button>` : ''}${r.buttons.map((b, n) => r.id.startsWith('async:') && n < r.buttons.length - 2 ? '' : `<button data-request="${esc(r.id)}" data-action="${n}" aria-pressed="${!!b.selected}" ${b.disabled ? 'disabled' : ''}>${esc(b.label)}</button>`).join('')}</div></section>`; }).join('');
+      + `<div class="qnAct">${r.id.startsWith('async:') ? `<button data-question-compose="${esc(r.id)}">在对话框回答</button>` : ''}${r.buttons.map((b, n) => r.id.startsWith('async:') && n < r.buttons.length - 2 ? '' : `<button data-request="${esc(r.id)}" data-action="${n}" aria-pressed="${!!b.selected}" ${b.disabled ? 'disabled' : ''}>${esc(b.label)}</button>`).join('')}</div></section>`; }).join(''), open);
     bar.classList.toggle('show', qs.requests.length > 0);
     bar.querySelectorAll('[data-field]').forEach(el => {
       const key = questionFieldKey(el);
@@ -1013,16 +1050,11 @@ function renderQuestions(qs) {
       el.oninput = () => {
         qnDrafts.set(key, el.value);
         const r = qnState.requests.find(r => r.id === el.dataset.request);
-        if (r.id.startsWith('async:') && el.dataset.field === '0' && mode === 'chat' && document.activeElement === el) {
-          setQuestionCompose(r.id);
-          text.value = el.value; autosize(); saveDraft();
-        }
         if (r.id.startsWith('async:') && !r.buttons.every(b => b.disabled) && !qnPending) {
           const submit = [...bar.querySelectorAll('[data-action]')].find(b => b.dataset.request === r.id && Number(b.dataset.action) === r.buttons.length - 1);
           submit.disabled = !el.value.trim();
         }
       };
-      if (el.dataset.request.startsWith('async:') && el.dataset.field === '0') el.onfocus = () => setQuestionCompose(el.dataset.request);
       el.onchange = () => { if (!el.dataset.request.startsWith('async:')) send({ t: 'codexRequest', id: el.dataset.request, field: Number(el.dataset.field), value: el.value }); };
       if (qnDrafts.has(key)) el.oninput();
       if (key === focusKey && !qnPending) {
@@ -1034,28 +1066,28 @@ function renderQuestions(qs) {
     if (document.body.classList.contains('kb')) fitViewport();
     return;
   }
-  if (!qs?.list?.length) { bar.innerHTML = ''; bar.classList.remove('show'); return; }
+  if (!qs?.list?.length) { bar.innerHTML = ''; bar.classList.remove('show'); updateComposeCompact(); return; }
   if (qs.devin) {
     const q = qs.list[0], pg = qs.pager;
-    bar.innerHTML = `<div class="qnHead">Devin 在问你${pg ? `（${pg.cur}/${pg.total}）` : ''}`
-      + (pg && pg.total > 1 ? `<span class="qnPg"><button data-qpart="prev" ${qs.canPrev ? '' : 'disabled'}>‹</button><button data-qpart="next" ${qs.canNext ? '' : 'disabled'}>›</button></span>` : '') + '</div>'
+    bar.innerHTML = questionCard(`Devin 在问你<span class="qnCount">${pg ? `${pg.cur}/${pg.total}` : '1 个问题'}</span>`,
+      (pg && pg.total > 1 ? `<div class="qnPg"><button data-qpart="prev" ${qs.canPrev ? '' : 'disabled'}>‹</button><button data-qpart="next" ${qs.canNext ? '' : 'disabled'}>›</button></div>` : '')
       + `<div class="qnQ">${esc(q.text)}</div><div class="qnOpts">`
       + q.options.map((o, oi) => `<button class="qnOpt ${o.sel ? 'on' : ''}" data-qi="0" data-oi="${oi}"><b>${q.multi ? (o.sel ? '☑' : '☐') : String.fromCharCode(65 + oi)}</b><span>${esc(o.label)}${o.desc ? `<small>${esc(o.desc)}</small>` : ''}</span></button>`).join('')
       + `</div><div class="qnHint">想自己回答？直接在下方输入框写</div>`
-      + `<div class="qnAct"><button data-qpart="skip">跳过</button>${qs.hasSubmit ? `<button class="primary" data-qpart="submit" ${qs.canSubmit ? '' : 'disabled'}>提交</button>` : ''}</div>`;
+      + `<div class="qnAct"><button data-qpart="skip">跳过</button>${qs.hasSubmit ? `<button class="primary" data-qpart="submit" ${qs.canSubmit ? '' : 'disabled'}>提交</button>` : ''}</div>`, open);
     bar.classList.add('show');
     questionBusy();
     return;
   }
-  bar.innerHTML = `<div class="qnHead">Agent 在问你${qs.list.length > 1 ? `（${qs.list.length} 个问题）` : ''}</div>`
-    + qs.list.map((q, qi) => `<div class="qnQ">${qs.list.length > 1 ? `${qi + 1}. ` : ''}${esc(q.text)}</div><div class="qnOpts">`
+  bar.innerHTML = questionCard(`Agent 在问你<span class="qnCount">${qs.list.length} 个问题</span>`,
+    qs.list.map((q, qi) => `<div class="qnQ">${qs.list.length > 1 ? `${qi + 1}. ` : ''}${esc(q.text)}</div><div class="qnOpts">`
       + q.options.map((o, oi) => {
         const letter = String.fromCharCode(65 + oi);
         return o.free
           ? `<div class="qnFree ${o.sel ? 'on' : ''}"><input data-qi="${qi}" data-oi="${oi}" placeholder="其他…" value="${esc(o.value)}" enterkeyhint="done"><button data-qfree="${qi}:${oi}">填入</button></div>`
           : `<button class="qnOpt ${o.sel ? 'on' : ''}" data-qi="${qi}" data-oi="${oi}"><b>${letter}</b><span>${esc(o.label)}</span></button>`;
       }).join('') + '</div>').join('')
-    + `<div class="qnAct"><button data-qpart="skip">跳过</button><button class="primary" data-qpart="submit" ${qs.canSubmit ? '' : 'disabled'}>提交</button></div>`;
+    + `<div class="qnAct"><button data-qpart="skip">跳过</button><button class="primary" data-qpart="submit" ${qs.canSubmit ? '' : 'disabled'}>提交</button></div>`, open);
   bar.classList.add('show');
   questionBusy();
 }
@@ -1098,9 +1130,34 @@ function toggleChangeNotice() {
   if (hiddenChangeNotices.has(key)) hiddenChangeNotices.delete(key); else hiddenChangeNotices.add(key);
   renderQueue(lastChat?.busy, lastChat?.queued || [], lastChat?.subagents || [], lastChat?.readonly, lastChat?.changed, lastChat?.queuedCount);
 }
-function renderQueue(busy, queued, subs = [], readonly = false, changed = 0, qCount = 0) {
-  const bar = $('queueBar');
+function queuedMessages(queued = chatStale ? [] : lastChat?.queued || [], qCount = chatStale ? 0 : lastChat?.queuedCount) {
   const devin = currentApp === 'devin';
+  const pending = pendingEchoes.filter(p => p.kind === 'queue' && p.sel === viewSel && !p.represented);
+  const nativeCount = Math.max(queued.length, devin ? qCount || 0 : 0);
+  const count = queued.length ? nativeCount + pending.length : Math.max(nativeCount, pending.length);
+  return { count, pending, queued, devin };
+}
+function queuedMessagesHtml({ count, pending, queued, devin }) {
+  return pending.map(p => `<div class="q pending"><span class="qt">${esc(p.text)}</span><span class="sub">${I18N.tr(p.syncing ? '正在同步…' : p.confirmed ? '已排队' : p.unknown ? '发送结果待确认' : '发送中…')}</span></div>`).join('')
+    + queued.map(q => `<div class="q"><span class="qt">${esc(q.t || '(空)')}</span>`
+      + (supportsCapability('queueEdit') ? ibtn('edit', devin ? '从队列取出，放回输入框' : '修改', `data-q="${esc(q.id)}" data-a="edit"`) : '')
+      + ibtn('enter', '打断当前这一轮，立刻发送', `data-q="${esc(q.id)}" data-a="send"`)
+      + ibtn('x', '删除', `data-q="${esc(q.id)}" data-a="remove"`, 'del') + '</div>').join('')
+    + (count && devin && !queued.length ? `<div class="q"><span class="qt">内容读不到，只显示数量</span></div>` : '');
+}
+const queueClearButton = queue => queue.devin ? ibtn('trash', '清空', 'data-a="clear" data-q=""', 'del') : '';
+function renderQueuedList(queue) {
+  const html = `<div class="qhRow"><span class="qh">排队中 ${queue.count} 条</span>${queue.count ? queueClearButton(queue) : ''}</div>`
+    + (queue.count ? queuedMessagesHtml(queue) : `<div class="hint">${I18N.tr('(空)')}</div>`);
+  if ($('queueList').innerHTML !== html) $('queueList').innerHTML = html;
+}
+function showQueuedMessages() {
+  openSheet('queued', '<h3>排队</h3><div id="queueList"></div>');
+  $('queueList').onclick = $('queueBar').onclick;
+  renderQueuedList(queuedMessages());
+}
+function renderQueue(busy, queued, subs = [], readonly = false, changed = 0, qCount = 0) {
+  const bar = $('queueBar'), queue = queuedMessages(queued, qCount);
   let html = '';
   if (readonly && !chatStale && lastChat?.subagent) html += `<div class="run sub"><span>正在查看子 Agent 的对话（只读）</span>${ibtn('back', '返回主对话', 'data-main')}</div>`;
   if (subs.length && !readonly) {
@@ -1108,24 +1165,16 @@ function renderQueue(busy, queued, subs = [], readonly = false, changed = 0, qCo
     if (subsOpen) html += subs.map(n => `<div class="q"><span class="qt sa">${esc(n)}</span>`
       + ibtn('eye', '查看', `data-sub="${esc(n)}" data-part="open"`) + ibtn('stop', '停止', `data-sub="${esc(n)}" data-part="stop"`, 'del') + '</div>').join('');
   }
-  const pending = pendingEchoes.filter(p => p.kind === 'queue' && p.sel === viewSel && !p.represented);
-  const nativeCount = Math.max(queued.length, devin ? qCount || 0 : 0);
-  const n = queued.length ? nativeCount + pending.length : Math.max(nativeCount, pending.length);
-  if (n) {
-    html += `<div class="qhRow"><button class="qh fold" data-qfold aria-expanded="${queueOpen}">${queueOpen ? '▾' : '▸'} <span>排队中 ${n} 条</span></button>${devin ? ibtn('trash', '清空', 'data-a="clear" data-q=""', 'del') : ''}</div>`;
-  }
-  if (n && queueOpen) {
-    html += pending.map(p => `<div class="q pending"><span class="qt">${esc(p.text)}</span><span class="sub">${I18N.tr(p.syncing ? '正在同步…' : p.confirmed ? '已排队' : p.unknown ? '发送结果待确认' : '发送中…')}</span></div>`).join('');
-    html += queued.map(q => `<div class="q"><span class="qt">${esc(q.t || '(空)')}</span>`
-      + (supportsCapability('queueEdit') ? ibtn('edit', devin ? '从队列取出，放回输入框' : '修改', `data-q="${esc(q.id)}" data-a="edit"`) : '')
-      + ibtn('enter', '打断当前这一轮，立刻发送', `data-q="${esc(q.id)}" data-a="send"`)
-      + ibtn('x', '删除', `data-q="${esc(q.id)}" data-a="remove"`, 'del') + '</div>').join('');
-    if (devin && !queued.length) html += `<div class="q"><span class="qt">内容读不到，只显示数量</span></div>`;
+  if (queue.count) {
+    html += `<div class="qhRow"><button class="qh fold" data-qfold aria-expanded="${queueOpen}">${queueOpen ? '▾' : '▸'} <span>排队中 ${queue.count} 条</span></button>${queueClearButton(queue)}</div>`;
+    if (queueOpen) html += queuedMessagesHtml(queue);
   }
   if (changed && !readonly && !hiddenChangeNotices.has(changeNoticeKey())) html += `<div class="changesNotice"><button class="qh fold" data-changes>改动了 ${changed} 个文件 ›</button>${ibtn('x', '隐藏改动提示', 'data-toggle-changes')}</div>`;
   bar.innerHTML = html;
   bar.classList.toggle('show', Boolean(html));
+  if (sheetKind === 'queued') renderQueuedList(queue);
   if (document.body.classList.contains('kb')) fitViewport();
+  document.dispatchEvent(new Event('composer-state'));
 }
 
 let queueEditRequest = null;
@@ -1186,20 +1235,20 @@ $('queueBar').onclick = async e => {
   if ('fold' in b.dataset) { subsOpen = !subsOpen; return renderQueue(lastChat?.busy, lastChat?.queued || [], lastChat?.subagents || [], lastChat?.readonly, lastChat?.changed, lastChat?.queuedCount); }
   if ('main' in b.dataset) { send({ t: 'mainChat' }); status('返回主对话…'); return; }
   if (b.dataset.sub) {
-    if (b.dataset.part === 'stop' && !await ask(`停止子 Agent「${b.dataset.sub}」？\n它做到一半的工作会中断。`, '停止')) return;
+    if (b.dataset.part === 'stop' && !await ask(`停止子 Agent「${b.dataset.sub}」？\n它做到一半的工作会中断。`, '停止', true)) return;
     send({ t: 'subagent', name: b.dataset.sub, part: b.dataset.part });
     status(b.dataset.part === 'stop' ? '正在停止子 Agent…' : '正在打开子 Agent…');
     return;
   }
   if (b.dataset.a === 'edit') return editQueued(b.dataset.q);
   if (b.dataset.a === 'clear') {
-    if (!await ask('清空 Devin 的排队消息？', '清空')) return;
+    if (!await ask('清空 Devin 的排队消息？', '清空', true)) return;
     sendQueueAction('', 'clear');
     status('正在清空排队消息…');
     return;
   }
-  if (b.dataset.a === 'send' && !await ask('立即发送这条消息？\nAgent 当前这一轮会被打断。', '立即发送')) return;
-  if (b.dataset.a === 'remove' && !await ask('删除这条排队消息？', '删除')) return;
+  if (b.dataset.a === 'send' && !await ask('立即发送这条消息？\nAgent 当前这一轮会被打断。', '立即发送', true)) return;
+  if (b.dataset.a === 'remove' && !await ask('删除这条排队消息？', '删除', true)) return;
   sendQueueAction(b.dataset.q, b.dataset.a);
   status(b.dataset.a === 'send' ? '已立即发送这条排队消息' : '已删除这条排队消息');
 };
@@ -1448,7 +1497,7 @@ function requestOlderRemote() {
     const orders = lastChat.items.map(it => it.order).filter(Number.isFinite);
     Object.assign(paging, { before: historyCursor ?? (orders.length ? Math.min(...orders) : null),
       known: SC.key ? [...SC.items.keys()] : lastChat.items.map(it => it.i), details: executionRecordsShown() });
-  }
+  } else if (currentApp === 'cursor') paging.before = lastChat.items[0]?.i || null;
   if (send({ t: 'scrollChat', dy: -900, automatic: true, history: true, requestId: historyRequest.id, ...paging }) === false) {
     historyExpanded = historyRequest.expanded;
     clearHistoryRequest();
@@ -1633,12 +1682,13 @@ list.addEventListener('touchmove', e => {
 }, { passive: true });
 for (const event of ['touchend', 'touchcancel']) list.addEventListener(event, () => {
   if (!chatTouching) return;
-  chatMomentum = event === 'touchend';
+  chatMomentum = event === 'touchend' && chatUserScroll;
   if (event === 'touchcancel') bottomScrollIntent = null;
   chatTouching = false;
   restoringChatScroll = false;
   if (historyPullUp && list.scrollTop <= 1) historyArmed = true;
-  settleChatScroll();
+  if (!chatUserScroll) flushSettledChat();
+  else settleChatScroll();
 }, { passive: true });
 function jumpToLatest() {
   stopChatMotion(() => {
@@ -1863,7 +1913,7 @@ document.addEventListener('click', async e => {
 $('pickMode').onclick = () => requestMenu('mode', '读取模式列表…');
 $('pickModel').onclick = () => requestMenu('model', '读取模型列表…');
 $('pickPerm').onclick = () => requestMenu('permission', '读取权限…');
-function showCodexSkills(rows) {
+function showCodexSkills(rows, input = composerInput()) {
   openSheet('skills', '<h3>Skill · 技能</h3><input id="skillSearch" placeholder="搜索技能" style="width:100%;box-sizing:border-box;margin-bottom:8px"><div id="skillRows"></div>');
   const paint = () => {
     const q = $('skillSearch').value.toLowerCase();
@@ -1874,20 +1924,20 @@ function showCodexSkills(rows) {
     const b = e.target.closest('[data-skill]');
     if (!b) return;
     const r = rows[Number(b.dataset.skill)], token = '/' + r.label;
-    closeSheet(); text.focus();
-    text.setRangeText(token + ' ', text.selectionStart, text.selectionEnd, 'end');
-    MN.mentions.push({ ...r, token, at: text.selectionStart - token.length - 1 });
-    MN.value = text.value;
-    autosize(); saveDraft();
+    closeSheet(); input.focus();
+    input.setRangeText(token + ' ', input.selectionStart, input.selectionEnd, 'end');
+    MN.mentions.push({ ...r, token, at: input.selectionStart - token.length - 1 });
+    MN.value = input.value;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
   };
   paint();
 }
 let codexFileRequest = 0;
-async function openCodexFilePicker(token) {
-  const scope = chatInputKey(), selected = new Map();
-  const start = token?.start ?? text.selectionStart, end = token?.end ?? token?.caret ?? text.selectionEnd;
+async function openCodexFilePicker(token, input = composerInput()) {
+  const scope = chatCacheKey(viewSel), selected = new Map();
+  const start = token?.start ?? input.selectionStart, end = token?.end ?? token?.caret ?? input.selectionEnd;
   let directory = null;
-  mentionHide();
+  mentionHide(input);
   const paint = (note = '') => {
     const showHidden = store.get('codex-files-show-hidden') === '1';
     const rows = (directory?.entries || []).map((entry, index) => !showHidden && entry.name.startsWith('.') ? '' : entry.directory
@@ -1909,8 +1959,8 @@ async function openCodexFilePicker(token) {
     };
     $('codexFileCancel').onclick = closeSheet;
     $('codexFileAdd').onclick = () => {
-      if (scope !== chatInputKey()) { closeSheet(); return status('会话已切换，请重新选择文件', false); }
-      if (takeMentions(text.value.slice(0, start) + text.value.slice(end)).length + selected.size > 12) return status('每条消息最多添加 12 个引用项', false);
+      if (scope !== chatCacheKey(viewSel) || input !== composerInput()) { closeSheet(); return status('会话已切换，请重新选择文件', false); }
+      if (takeMentions(input.value.slice(0, start) + input.value.slice(end)).length + selected.size > 12) return status('每条消息最多添加 12 个引用项', false);
       let at = start;
       const mentions = [...selected.values()].map(entry => {
         const token = '@' + entry.name;
@@ -1918,10 +1968,10 @@ async function openCodexFilePicker(token) {
         at += token.length + 1;
         return mention;
       });
-      text.setRangeText(mentions.map(m => m.token).join(' ') + (/\s/.test(text.value[end] || '') ? '' : ' '), start, end, 'end');
+      input.setRangeText(mentions.map(m => m.token).join(' ') + (/\s/.test(input.value[end] || '') ? '' : ' '), start, end, 'end');
       MN.mentions.push(...mentions);
-      MN.value = text.value;
-      closeSheet(); autosize(); saveDraft(); text.focus();
+      MN.value = input.value;
+      closeSheet(); input.dispatchEvent(new Event('input', { bubbles: true })); input.focus();
     };
   };
   const browse = async path => {
@@ -1938,13 +1988,13 @@ async function openCodexFilePicker(token) {
   };
   await browse('');
 }
-$('add').onclick = () => {
+function openComposerAdd(input = text) {
   if (currentApp === 'fusion') {
     openSheet('add', '<h3>添加附件</h3><button class="opt" data-control="img">上传图片</button><button class="opt" data-control="uploadDoc">上传文档</button>');
     $('sheet').querySelectorAll('[data-control]').forEach(b => b.onclick = () => { closeSheet(); $(b.dataset.control).click(); });
     return;
   }
-  const c = lastChat?.codex;
+  const c = (input === text ? lastChat : chatBySel.get(chatCacheKey(viewSel)))?.codex;
   if (!c) {
     const controls = ['newChat', 'pickMode', 'pickDir'].filter(id => !$(id).hidden);
     const editorRow = currentApp === 'devin'
@@ -1967,12 +2017,13 @@ $('add').onclick = () => {
     if (key === 'run') return send({ t: 'codexRun' });
     if (key === 'chat') return send({ t: 'codexChat' });
     if (key === 'skills') return send({ t: 'codexSkills' });
-    if (key === 'local-files') return openCodexFilePicker();
-    text.focus();
-    text.setRangeText(key === 'files' ? '@' : '/', text.selectionStart, text.selectionEnd, 'end');
-    autosize(); saveDraft(); mentionUpdate();
+    if (key === 'local-files') return openCodexFilePicker(undefined, input);
+    input.focus();
+    input.setRangeText(key === 'files' ? '@' : '/', input.selectionStart, input.selectionEnd, 'end');
+    input.dispatchEvent(new Event('input', { bubbles: true })); mentionUpdate(input);
   });
-};
+}
+$('add').onclick = () => openComposerAdd(text);
 $('pickPlan').onclick = () => { status('正在切换 Plan…'); send({ t: 'codexPlan' }); };
 $('pickIde').onclick = () => send({ t: 'codexIde' });
 $('pickRun').onclick = () => { status('读取执行位置…'); send({ t: 'codexRun' }); };
