@@ -20,6 +20,7 @@
   --scrim: rgba(5,6,8,.62);
   --r-xs: 6px; --r-sm: 10px; --r-md: 14px; --r-lg: 18px; --r-xl: 24px; --r-pill: 999px;
   --ease: cubic-bezier(.2,.8,.2,1);
+  --ease-mercury: cubic-bezier(.22,.9,.24,1);
 
   /* Legacy variable names kept as aliases — referenced by JS inline styles and older markup. */
   --panel: var(--s1); --bar: var(--s1); --queuebg: var(--s1); --warnbg: var(--warn-tint);
@@ -1685,7 +1686,7 @@ body.conv #overview { display: none; }
 #overview .ov-inactive-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 #overview.ov-landscape .ov-inactive-grid { grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); }
 
-#overview .ov-tile { position: relative; overflow: hidden; display: grid; cursor: pointer; color: var(--fg); background: var(--s1); border: 1px solid var(--line-2); border-radius: 30px; box-shadow: var(--shadow-1); padding: 14px; aspect-ratio: 1; transition: transform .15s var(--ease), box-shadow .2s; --sc: var(--fg-4); --tint: transparent;
+#overview .ov-tile { position: relative; overflow: hidden; display: grid; cursor: pointer; color: var(--fg); background: var(--s1); border: 1px solid var(--line-2); border-radius: 30px; box-shadow: var(--shadow-1); padding: 14px; aspect-ratio: 1; transition: transform .15s var(--ease), box-shadow .2s, opacity .5s var(--ease-mercury), filter .5s var(--ease-mercury); --sc: var(--fg-4); --tint: transparent;
   grid-template-columns: auto 1fr; grid-template-rows: auto min-content auto 1fr; grid-template-areas: "logo badge" "title title" "now now" "foot foot"; }
 #overview .ov-tile::before { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: var(--p, 0%); background: var(--tint); transition: height .7s var(--ease); z-index: 0; pointer-events: none; }
 #overview .ov-tile > * { position: relative; z-index: 1; min-width: 0; }
@@ -1841,4 +1842,26 @@ body.conv:not(.wide) #ovBack + #title { margin-left: -6px; padding-left: 0; }
 @keyframes ovShimmer { 0%, 100% { opacity: .15; } 50% { opacity: .6; } }
 @keyframes ovPulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
 @keyframes ovTin { from { opacity: 0; transform: translateY(-14px) scale(.9); } }
+@keyframes ov-vt-in-old { to { transform: scale(1.04); opacity: 0; filter: blur(4px); } }
+@keyframes ov-vt-in-new { from { transform: scale(.97); opacity: 0; filter: blur(4px); } }
+@keyframes ov-vt-out-old { to { transform: scale(.97); opacity: 0; filter: blur(4px); } }
+@keyframes ov-vt-out-new { from { transform: scale(1.04); opacity: 0; filter: blur(4px); } }
+@keyframes ov-vt-down-old { to { transform: translateY(-24px); opacity: 0; filter: blur(4px); } }
+@keyframes ov-vt-down-new { from { transform: translateY(24px); opacity: 0; filter: blur(4px); } }
+@keyframes ov-vt-up-old { to { transform: translateY(24px); opacity: 0; filter: blur(4px); } }
+@keyframes ov-vt-up-new { from { transform: translateY(-24px); opacity: 0; filter: blur(4px); } }
+html[data-ov-dir]::view-transition-group(*) { animation-duration: .6s; animation-timing-function: var(--ease-mercury); }
+html[data-ov-dir]::view-transition-old(root), html[data-ov-dir]::view-transition-new(root) { animation-duration: .6s; animation-timing-function: var(--ease-mercury); animation-fill-mode: both; }
+html[data-ov-dir="in"]::view-transition-old(root) { animation-name: ov-vt-in-old; }
+html[data-ov-dir="in"]::view-transition-new(root) { animation-name: ov-vt-in-new; }
+html[data-ov-dir="out"]::view-transition-old(root) { animation-name: ov-vt-out-old; }
+html[data-ov-dir="out"]::view-transition-new(root) { animation-name: ov-vt-out-new; }
+html[data-ov-dir="down"]::view-transition-old(root) { animation-name: ov-vt-down-old; }
+html[data-ov-dir="down"]::view-transition-new(root) { animation-name: ov-vt-down-new; }
+html[data-ov-dir="up"]::view-transition-old(root) { animation-name: ov-vt-up-old; }
+html[data-ov-dir="up"]::view-transition-new(root) { animation-name: ov-vt-up-new; }
+html[data-ov-dir="flat"]::view-transition-group(*), html[data-ov-dir="flat"]::view-transition-old(root), html[data-ov-dir="flat"]::view-transition-new(root) { animation-duration: .35s; }
+:root[data-theme="light"] #overview { background: linear-gradient(180deg, #EEF0F3 0%, #F6F4F3 55%, #F4F0F0 100%); }
+:root:not([data-theme="light"]) #overview .ov-tile.ov-open { box-shadow: 0 10px 40px rgba(0,0,0,.2), 0 0 0 1px rgba(255,255,255,.05), 0 18px 60px -18px rgba(140,165,255,.18); }
+#overview.ov-focus .ov-tile:not(.ov-open):not(.ov-selecting) { opacity: .45; filter: saturate(.6) blur(1.5px); }
 @media (prefers-reduced-motion: reduce) { #overview * { animation: none !important; transition: none !important; } }

@@ -540,6 +540,7 @@ function ovCommit(p) {
   const scrolls = new Map([...$('ovBoard').querySelectorAll('[data-ov-scroll]')].map(el => [el.dataset.ovScroll, { top: el.scrollTop, left: el.scrollLeft }]));
   ovPaint = p.paint;
   $('overview').classList.toggle('ov-project', !!ovS.proj);
+  $('overview').classList.toggle('ov-focus', !!ovS.open);
   $('ovUp').classList.toggle('ov-hide', !p.up);
   if (ovCrumbsPaint !== p.crumbs) {
     ovPatch($('ovCrumbs'), p.crumbs);
@@ -561,6 +562,26 @@ function ovCommit(p) {
   ovPrepareVisibleComposer();
   ovMountComposerControls();
   ovUpdateUsage();
+  ovLast = { depth: ovDepth(), level: ovS.level };
+}
+const OV_LEVELS = ['sessions', 'projects', 'favorites', 'fusion'];
+const ovDepth = () => ovS.open ? 3 : ovS.proj ? 2 : ovS.comp ? 1 : 0;
+let ovLast = { depth: ovDepth(), level: ovS.level }, ovVt = null;
+function ovDirection() {
+  const depth = ovDepth();
+  if (depth !== ovLast.depth) return depth > ovLast.depth ? 'in' : 'out';
+  const from = OV_LEVELS.indexOf(ovLast.level), to = OV_LEVELS.indexOf(ovS.level);
+  if (from < 0 || to < 0 || from === to) return 'flat';
+  return to > from ? 'down' : 'up';
+}
+function ovTransition(dir, fn) {
+  if (!document.startViewTransition || matchMedia('(prefers-reduced-motion:reduce)').matches) return fn();
+  const root = document.documentElement;
+  root.dataset.ovDir = dir;
+  const t = ovVt = document.startViewTransition(fn);
+  const clear = () => { if (ovVt === t) delete root.dataset.ovDir; };
+  t.ready.catch(() => {});
+  t.finished.then(clear, clear);
 }
 function ovRender(vt, scroll, locate = false) {
   if (winBinding && ovToolState) {
@@ -592,8 +613,7 @@ function ovRender(vt, scroll, locate = false) {
     ovMain.scrollTop = top;
     if (locate) ovLocateCard();
   };
-  const motion = document.startViewTransition && !matchMedia('(prefers-reduced-motion:reduce)').matches;
-  if (motion && vt) document.startViewTransition(() => commit(ovPlan())).ready.catch(() => {});
+  if (vt) ovTransition(ovDirection(), () => commit(ovPlan()));
   else commit();
 }
 function ovHistory(scroll = ovMain.scrollTop) {
@@ -621,7 +641,7 @@ function ovRestoreComputers(saved) {
     ovRender(false, sameLevel ? saved.view.ovScroll : 0);
   }
 }
-function ovRestore(st) {
+function ovRestore(st, vt = true) {
   ovClearBatch();
   Object.assign(ovS, OV_ROOT, st?.ov);
   ovCollapsed.clear();
@@ -629,7 +649,7 @@ function ovRestore(st) {
   ovExpanded.clear();
   for (const id of st?.ovExpanded || []) ovExpanded.add(id);
   if (ovS.level === 'fusion') refreshFusionWorkspace();
-  ovRender(true, st?.ovScroll || 0);
+  ovRender(vt, st?.ovScroll || 0);
 }
 function ovMove(change, push = false) {
   ovClearBatch();
@@ -874,8 +894,7 @@ function ovShowConversation() {
   ovSaveHistory();
   history.pushState({ ...ovHistory(), ovConv: true, ovDepth: (history.state?.ovDepth || 0) + 1 }, '');
   ovReleaseComposer();
-  document.body.classList.add('conv');
-  autosize(); ovVisible();
+  ovTransition('in', () => { document.body.classList.add('conv'); autosize(); ovVisible(); });
 }
 function ovConversationOpened(enter = true) { ovEnterRequested = enter; }
 function ovEnterReady() {
@@ -885,9 +904,7 @@ function ovEnterReady() {
 }
 function ovLeave(st = history.state) {
   ovEnterRequested = false;
-  document.body.classList.remove('conv');
-  ovVisible();
-  ovRestore(st);
+  ovTransition('out', () => { document.body.classList.remove('conv'); ovVisible(); ovRestore(st, false); });
 }
 function ovBackToBoard() {
   if (history.state?.ovConv && history.state.ovDepth > 0) return history.back();
@@ -1015,7 +1032,7 @@ addEventListener('popstate', () => {
   const st = history.state;
   if (st?.viewer) return;
   if (st?.ovConv) {
-    if (!document.body.classList.contains('conv')) { document.body.classList.add('conv'); ovMountComposerControls(); ovVisible(); }
+    if (!document.body.classList.contains('conv')) ovTransition('in', () => { document.body.classList.add('conv'); ovMountComposerControls(); ovVisible(); });
     return;
   }
   if (document.body.classList.contains('conv')) return ovLeave(st);
