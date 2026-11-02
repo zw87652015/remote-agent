@@ -207,13 +207,19 @@ function ovApply(e, st, data) {
   let dirty = false;
   for (const r of ovRecsOf(e, st)) {
     const p = prev.get(r.key);
+    if (r.run?.startedAt > 0 && p?.run?.startedAt > r.run.startedAt) {
+      next.set(r.key, p);
+      continue;
+    }
     let run = r.run;
-    if (!run || run.status === 'unknown' && run.id === p?.run?.id) run = p?.run;
+    if (!run || run.status === 'unknown') run = p?.run;
     next.set(r.key, { busy: r.busy, wait: !!r.wait, state: r.state, run });
     if ((r.busy || r.wait) && ovDone[r.key]) { delete ovDone[r.key]; dirty = true; }
     if (!p || first) continue;
     if (r.wait && !p.wait) ovNotify(r, 'wait');
-    if (!r.busy && !r.wait && r.run?.status === 'completed' && p.run?.id === r.run.id && p.run.status === 'running') {
+    if (!r.busy && !r.wait && r.run?.status === 'completed' && ovDone[r.key]?.runId !== r.run.id
+      && (p.run?.id === r.run.id ? p.run.status === 'running'
+        : p.run?.startedAt > 0 && r.run.startedAt > p.run.startedAt)) {
       ovDone[r.key] = { runId: r.run.id, at: r.run.completedAt ? r.run.completedAt - st.offset : Date.now() };
       dirty = true; ovNotify(r, 'done');
     }
@@ -230,7 +236,7 @@ function ovNotify(r, kind) {
 function ovRecsOf(e, st) {
   const off = ovComputerStatus(e, st) !== 'online', out = [];
   for (const s of st.data.sessions) {
-    const key = ovNativeKey(e.id, s), done = s.run?.status === 'completed' && ovDone[key]?.runId === s.run.id ? ovDone[key].at : 0;
+    const key = ovNativeKey(e.id, s), done = s.run?.status === 'completed' && ovDone[key] && ovDone[key].runId === s.run.id ? ovDone[key].at : 0;
     const since = s.startedAt || st.first.get(key);
     const stopped = s.run?.status === 'stopped' && ovStoppedSeen[key] !== s.run.id;
     const state = s.dormant ? 'idle' : s.waiting ? 'wait' : s.busy ? 'run' : s.run?.status === 'error' || stopped ? 'err'
