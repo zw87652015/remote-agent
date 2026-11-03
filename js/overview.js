@@ -324,7 +324,7 @@ function ovComputerGroup(e, all, projs) {
   const body = !collapsed && st?.data ? ovS.level === 'projects' ? ovFlows(projects, all, false) : ovSessions(recs, e.id) : '';
   const empty = status === 'online' && st?.data?.ready ? ovEmpty('这里还没有会话') : '';
   const tools = status === 'online' && !e.foreign ? `<button type="button" class="ov-computer-tool" data-ov="computer-projects" data-id="${esc(e.id)}" title="${I18N.tr('打开项目／新建会话')}" aria-label="${I18N.tr('打开项目／新建会话')}">${$('pickEditor').innerHTML}</button><button type="button" class="ov-computer-tool" data-ov="computer-editor" data-id="${esc(e.id)}" title="${I18N.tr('打开文件')}" aria-label="${I18N.tr('打开文件')}">${fileEntryIcon(false)}</button>` : '';
-  return `<section class="ov-computer" data-ov-node="computer:${esc(e.id)}" style="view-transition-name:${ovTname('c:' + e.id)}"><div class="ov-computer-row ${status}"><button type="button" class="ov-computer-toggle" data-ov="fold" data-id="${esc(e.id)}" aria-expanded="${!collapsed}"><span class="ov-computer-dot" aria-hidden="true"></span><span class="ov-computer-label"><span class="ov-computer-name ovRaw">${esc(e.name)}</span>${detail ? `<span class="ov-computer-detail">${esc(detail)}</span>` : ''}${progress}</span></button>${tools}${action ? `<button type="button" class="ov-computer-action" ${action}>${badge}</button>` : ''}${!e.foreign && (status === 'offline' || loading && st?.failure || st?.link?.lastClose) ? `<button type="button" class="ov-computer-info" data-ov="details" data-id="${esc(e.id)}" aria-label="${ovT('连接详情')}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="8"/><path d="M12 10v7m0-11v1"/></svg></button>` : ''}<button type="button" class="ov-computer-fold" data-ov="fold" data-id="${esc(e.id)}" aria-expanded="${!collapsed}" aria-label="${I18N.tr(collapsed ? '展开电脑' : '折叠电脑')}"><svg class="ov-computer-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button></div>${body || empty && !collapsed ? `<div class="ov-board">${body || empty}</div>` : ''}</section>`;
+  return `<section class="ov-computer" data-ov-node="computer:${esc(e.id)}" data-ov-name="${ovTname('c:' + e.id)}"><div class="ov-computer-row ${status}"><button type="button" class="ov-computer-toggle" data-ov="fold" data-id="${esc(e.id)}" aria-expanded="${!collapsed}"><span class="ov-computer-dot" aria-hidden="true"></span><span class="ov-computer-label"><span class="ov-computer-name ovRaw">${esc(e.name)}</span>${detail ? `<span class="ov-computer-detail">${esc(detail)}</span>` : ''}${progress}</span></button>${tools}${action ? `<button type="button" class="ov-computer-action" ${action}>${badge}</button>` : ''}${!e.foreign && (status === 'offline' || loading && st?.failure || st?.link?.lastClose) ? `<button type="button" class="ov-computer-info" data-ov="details" data-id="${esc(e.id)}" aria-label="${ovT('连接详情')}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="8"/><path d="M12 10v7m0-11v1"/></svg></button>` : ''}<button type="button" class="ov-computer-fold" data-ov="fold" data-id="${esc(e.id)}" aria-expanded="${!collapsed}" aria-label="${I18N.tr(collapsed ? '展开电脑' : '折叠电脑')}"><svg class="ov-computer-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button></div>${body || empty && !collapsed ? `<div class="ov-board">${body || empty}</div>` : ''}</section>`;
 }
 function ovFlow(p, all, showComputer = !ovS.comp) {
   const recs = all.filter(r => r.project === p.key), fusion = p.app === 'fusion';
@@ -336,7 +336,7 @@ function ovFlow(p, all, showComputer = !ovS.comp) {
     : k.unknown ? ovT('状态待确认') : k.done ? ovT('已完成') : ovT('空闲');
   ovSig.push(`p:${p.key}:${st}`);
   const rows = recs.filter(r => r.state !== 'idle').sort(ovCompare);
-  return `<section class="ov-flow" data-ov-node="flow:${esc(p.key)}"><button type="button" class="ov-flow-head ov-st-${st}" ${attrs} style="view-transition-name:${ovTname('p:' + p.key)}">${ovLogo(apps.map(ovAg).join(''), ' ov-stack')}<span class="ov-badge">${label}</span>
+  return `<section class="ov-flow" data-ov-node="flow:${esc(p.key)}"><button type="button" class="ov-flow-head ov-st-${st}" ${attrs} data-ov-name="${ovTname('p:' + p.key)}">${ovLogo(apps.map(ovAg).join(''), ' ov-stack')}<span class="ov-badge">${label}</span>
     <div class="ov-title ovRaw">${esc(p.name)}</div><div class="ov-now">${sub}</div>
     <div class="ov-foot">${ovSeg(k)}<span class="ov-num">${k.wait + k.run}<small>活跃</small></span></div></button>${rows.length ? `<div class="ov-flow-row" data-ov-scroll="flow:${esc(p.key)}">${rows.map(ovSessTile).join('')}</div>` : ''}</section>`;
 }
@@ -353,7 +353,7 @@ function ovSessTile(r) {
   const selected = !!ovBatch?.selected.has(ovSessionIdentity(r));
   const cls = ['ov-tile', 'ov-session', 'ov-compact', `ov-st-${r.state}`, open && 'ov-open', r.off && 'ov-off', ovBatch && 'ov-selecting', selected && 'ov-selected'].filter(Boolean).join(' ');
   ovSig.push(`${r.key}:${cls}`);
-  return `<div class="${cls}" data-ov-session="${esc(r.key)}" style="--p:${fill}%;view-transition-name:${ovTname(r.key)}"${open ? '' : ` data-ov="sess" data-id="${esc(r.key)}"`}${ovBatch ? ` role="checkbox" aria-checked="${selected}" aria-disabled="${!ovCanManage(r) || ovBatch.running}" tabindex="0"` : ''}>
+  return `<div class="${cls}" data-ov-session="${esc(r.key)}" style="--p:${fill}%" data-ov-name="${ovTname(r.key)}"${open ? '' : ` data-ov="sess" data-id="${esc(r.key)}"`}${ovBatch ? ` role="checkbox" aria-checked="${selected}" aria-disabled="${!ovCanManage(r) || ovBatch.running}" tabindex="0"` : ''}>
     ${ovBatch && ovCanManage(r) ? `<span class="ov-check" aria-hidden="true">${selected ? '✓' : ''}</span>` : ''}
     ${ovRecLogo(r, open ? '<span class="ov-usage" data-ov-preserve></span>' : '')}<div class="ov-state"><span class="ov-badge">${esc(ovBadge(r))}</span><span class="ov-time">${esc(ovTime(r))}</span></div>
     <div class="ov-title ovRaw">${esc(r.title)}</div>
@@ -569,11 +569,20 @@ function ovDir() {
   const d = ovDepth(ovS) - ovDepth(ovPainted);
   return d > 0 ? 'in' : d < 0 ? 'out' : 'flat';
 }
+function ovVtNames() {
+  const h = innerHeight;
+  for (const el of $('overview').querySelectorAll('[data-ov-name]')) {
+    if (el.style.viewTransitionName === 'ov-space') continue;
+    const r = el.getBoundingClientRect();
+    el.style.viewTransitionName = r.width && r.bottom > 0 && r.top < h ? el.dataset.ovName : '';
+  }
+}
 function ovTransition(dir, update) {
   if (ovVtActive || !document.startViewTransition || matchMedia('(prefers-reduced-motion:reduce)').matches) return update();
   const root = document.documentElement, token = ++ovVtToken;
   root.dataset.ovVt = dir;
-  const t = document.startViewTransition(() => { ovVtActive = true; try { update(); } finally { ovVtActive = false; } });
+  ovVtNames();
+  const t = document.startViewTransition(() => { ovVtActive = true; try { update(); ovVtNames(); } finally { ovVtActive = false; } });
   t.ready.catch(() => {});
   t.finished.catch(() => {}).then(() => { if (token === ovVtToken) delete root.dataset.ovVt; });
   return t;
@@ -582,8 +591,8 @@ function ovSpaceNode(key) {
   const card = key ? $('ovBoard').querySelector(`[data-ov-session="${CSS.escape(key)}"]`) : null;
   return card?.getClientRects().length ? card : null;
 }
-function ovSpaceSettle(getCard, key, t) {
-  (t ? t.finished.catch(() => {}) : Promise.resolve()).then(() => { const card = getCard(); if (card) card.style.viewTransitionName = ovTname(key); });
+function ovSpaceSettle(getCard, t) {
+  (t ? t.finished.catch(() => {}) : Promise.resolve()).then(() => { const card = getCard(); if (card) card.style.viewTransitionName = ''; });
 }
 function ovRender(vt, scroll, locate = false) {
   if (winBinding && ovToolState) {
@@ -898,7 +907,7 @@ function ovShowConversation() {
   ovReleaseComposer();
   const key = ovSpaceKey, card = ovSpaceNode(key);
   if (card) card.style.viewTransitionName = 'ov-space';
-  ovSpaceSettle(() => card, key, ovTransition('space-in', () => { document.body.classList.add('conv'); autosize(); ovVisible(); }));
+  ovSpaceSettle(() => card, ovTransition('space-in', () => { document.body.classList.add('conv'); autosize(); ovVisible(); }));
 }
 function ovConversationOpened(enter = true) { ovEnterRequested = enter; }
 function ovEnterReady() {
@@ -917,7 +926,7 @@ function ovLeave(st = history.state) {
     card = ovSpaceNode(key);
     if (card) card.style.viewTransitionName = 'ov-space';
   });
-  ovSpaceSettle(() => card, key, t);
+  ovSpaceSettle(() => card, t);
   ovSpaceKey = '';
 }
 function ovBackToBoard() {
