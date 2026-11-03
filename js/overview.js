@@ -932,7 +932,7 @@ $('overview').addEventListener('pointerdown', e => {
   if (e.target.closest('.ov-input-history, [data-ov="tool"][data-v="insertNewline"], .ov-mentions') && e.pointerType === 'mouse') e.preventDefault();
   ovCancelHold(); ovHeld = '';
   const card = e.target.closest('[data-ov-session]');
-  if (!card || ovBatch || e.button !== 0 || e.target.closest('button, summary, input, textarea, a, [contenteditable], .ov-last, .ov-run-tools, .ov-attachments')) return;
+  if (!card || ovBatch || e.button !== 0 || ($('overview').classList.contains('ov-focus') && !card.classList.contains('ov-open')) || e.target.closest('button, summary, input, textarea, a, [contenteditable], .ov-last, .ov-run-tools, .ov-attachments')) return;
   const key = card.dataset.ovSession;
   ovHold = { x: e.clientX, y: e.clientY, timer: setTimeout(() => {
     ovHeld = key; ovCancelHold(); ovSessionMenu(key);
@@ -948,7 +948,7 @@ $('overview').addEventListener('click', e => {
   if (e.target.closest('.ov-mentions')) return pickMention(e);
   if (e.target.dataset.ovInput) return ovLocateReply();
   if (ovHeld && e.target.closest('[data-ov-session]')?.dataset.ovSession === ovHeld) { ovHeld = ''; e.preventDefault(); return; }
-  if ($('overview').classList.contains('ov-focus') && e.target.closest('.ov-main') && !e.target.closest('[data-ov-session]')) return ovCloseCard();
+  if ($('overview').classList.contains('ov-focus') && e.target.closest('.ov-main') && !e.target.closest('.ov-open')) return ovCloseCard();
   const el = e.target.closest('[data-ov]');
   if (!el) {
     if (ovS.open && e.target.closest('.ov-main') && !e.target.closest('[data-ov-session], button, a, input, textarea, select, summary, [contenteditable]')) return ovCloseCard();
