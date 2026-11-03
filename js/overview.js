@@ -560,6 +560,7 @@ function ovCommit(p) {
   ovPrepareVisibleComposer();
   ovMountComposerControls();
   ovUpdateUsage();
+  ovVtNames();
   ovPainted = { level: ovS.level, comp: ovS.comp, proj: ovS.proj, open: ovS.open };
 }
 const ovDepth = s => !!s.comp + !!s.proj + !!s.open;
