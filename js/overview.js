@@ -497,7 +497,7 @@ function ovPatch(container, html) {
   const template = document.createElement('template');
   template.innerHTML = html;
   const active = document.activeElement;
-  const anchor = $('mic').classList.contains('on') ? $('mic') : active;
+  const anchor = ovComposerControls.mic.classList.contains('on') ? ovComposerControls.mic : active;
   const key = node => node.nodeType === 1 ? [node.nodeName, node.getAttribute('data-ov') || '',
     node.getAttribute('data-ov-session') || node.getAttribute('data-ov-node') || node.getAttribute('data-ov-input') || node.getAttribute('data-ov-scroll')
       || node.getAttribute('data-id') || node.getAttribute('data-v') || node.getAttribute('class')?.split(' ')[0] || ''].join('|') : node.nodeName;
@@ -898,7 +898,7 @@ function ovShowConversation() {
   ovReleaseComposer();
   const key = ovSpaceKey, card = ovSpaceNode(key);
   if (card) card.style.viewTransitionName = 'ov-space';
-  ovSpaceSettle(() => card, key, ovTransition('in', () => { document.body.classList.add('conv'); autosize(); ovVisible(); }));
+  ovSpaceSettle(() => card, key, ovTransition('space-in', () => { document.body.classList.add('conv'); autosize(); ovVisible(); }));
 }
 function ovConversationOpened(enter = true) { ovEnterRequested = enter; }
 function ovEnterReady() {
@@ -910,7 +910,7 @@ function ovLeave(st = history.state) {
   ovEnterRequested = false;
   const key = ovSpaceKey;
   let card = null;
-  const t = ovTransition('out', () => {
+  const t = ovTransition('space-out', () => {
     document.body.classList.remove('conv');
     ovVisible();
     ovRestore(st, false);
@@ -948,6 +948,7 @@ $('overview').addEventListener('click', e => {
   if (e.target.closest('.ov-mentions')) return pickMention(e);
   if (e.target.dataset.ovInput) return ovLocateReply();
   if (ovHeld && e.target.closest('[data-ov-session]')?.dataset.ovSession === ovHeld) { ovHeld = ''; e.preventDefault(); return; }
+  if ($('overview').classList.contains('ov-focus') && e.target.closest('.ov-main') && !e.target.closest('[data-ov-session]')) return ovCloseCard();
   const el = e.target.closest('[data-ov]');
   if (!el) {
     if (ovS.open && e.target.closest('.ov-main') && !e.target.closest('[data-ov-session], button, a, input, textarea, select, summary, [contenteditable]')) return ovCloseCard();
@@ -1048,7 +1049,7 @@ addEventListener('popstate', () => {
   const st = history.state;
   if (st?.viewer) return;
   if (st?.ovConv) {
-    if (!document.body.classList.contains('conv')) ovTransition('in', () => { document.body.classList.add('conv'); ovMountComposerControls(); ovVisible(); });
+    if (!document.body.classList.contains('conv')) ovTransition('space-in', () => { document.body.classList.add('conv'); ovMountComposerControls(); ovVisible(); });
     return;
   }
   if (document.body.classList.contains('conv')) return ovLeave(st);

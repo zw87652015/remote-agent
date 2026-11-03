@@ -1578,7 +1578,7 @@ body.conv #overview { display: none; }
 #overview textarea { resize: none; line-height: 22px; padding: 7px 0; box-sizing: border-box; }
 #overview em { font-style: normal; }
 
-#overview .ov-top { flex: none; display: flex; align-items: flex-start; gap: 6px; padding: 14px 12px 0 16px; }
+#overview .ov-top { flex: none; display: flex; align-items: flex-start; gap: 6px; padding: 14px 12px 0 16px; view-transition-name: ov-top; }
 #overview .ov-ibtn { width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; color: var(--fg-2); flex: none; }
 #overview .ov-ibtn:active { background: var(--s2); }
 #overview .ov-ibtn svg { width: 22px; height: 22px; }
@@ -1593,7 +1593,7 @@ body.conv #overview { display: none; }
 #overview .ov-body { position: relative; flex: 1; min-height: 0; display: grid; grid-template-rows: 1fr auto; grid-template-areas: "main" "tools"; }
 #overview .ov-main { grid-area: main; min-height: 0; overflow: auto; padding: 2px 16px var(--ov-nav-h); scrollbar-width: none; }
 #overview .ov-main::-webkit-scrollbar { display: none; }
-#overview .ov-levels { position: absolute; left: 50%; bottom: max(14px, env(safe-area-inset-bottom)); z-index: 2; transform: translateX(-50%); display: flex; gap: 4px; padding: 6px 10px; border-radius: 999px; background: color-mix(in srgb, var(--ov-module) 80%, transparent); -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px); box-shadow: var(--ov-module-shadow); }
+#overview .ov-levels { position: absolute; left: 50%; bottom: max(14px, env(safe-area-inset-bottom)); z-index: 2; view-transition-name: ov-nav; transform: translateX(-50%); display: flex; gap: 4px; padding: 6px 10px; border-radius: 999px; background: color-mix(in srgb, var(--ov-module) 80%, transparent); -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px); box-shadow: var(--ov-module-shadow); }
 #overview.ov-landscape .ov-main { padding: 4px 18px var(--ov-nav-h) 6px; }
 
 #overview .ov-lv { display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: 11px; font-weight: 600; color: var(--fg-3); }
@@ -1867,10 +1867,14 @@ body.conv:not(.wide) #ovBack + #title { margin-left: -6px; padding-left: 0; }
 @keyframes ov-vt-flat-new { from { opacity: 0; filter: blur(6px); } }
 html[data-ov-vt]::view-transition-group(*) { animation-duration: .5s; animation-timing-function: var(--ov-ease); }
 html[data-ov-vt]::view-transition-old(*), html[data-ov-vt]::view-transition-new(*) { animation-duration: .5s; animation-timing-function: var(--ov-ease); animation-fill-mode: both; }
-html[data-ov-vt="in"]::view-transition-old(root), html[data-ov-vt="in"]::view-transition-old(*):only-child { animation-name: ov-vt-in-old; }
-html[data-ov-vt="in"]::view-transition-new(root), html[data-ov-vt="in"]::view-transition-new(*):only-child { animation-name: ov-vt-in-new; }
-html[data-ov-vt="out"]::view-transition-old(root), html[data-ov-vt="out"]::view-transition-old(*):only-child { animation-name: ov-vt-out-old; }
-html[data-ov-vt="out"]::view-transition-new(root), html[data-ov-vt="out"]::view-transition-new(*):only-child { animation-name: ov-vt-out-new; }
+html[data-ov-vt="in"]::view-transition-old(*):only-child { animation-name: ov-vt-in-old; }
+html[data-ov-vt="in"]::view-transition-new(*):only-child { animation-name: ov-vt-in-new; }
+html[data-ov-vt="out"]::view-transition-old(*):only-child { animation-name: ov-vt-out-old; }
+html[data-ov-vt="out"]::view-transition-new(*):only-child { animation-name: ov-vt-out-new; }
+html[data-ov-vt="space-in"]::view-transition-old(root), html[data-ov-vt="space-in"]::view-transition-old(*):only-child { animation-name: ov-vt-in-old; }
+html[data-ov-vt="space-in"]::view-transition-new(root), html[data-ov-vt="space-in"]::view-transition-new(*):only-child { animation-name: ov-vt-in-new; }
+html[data-ov-vt="space-out"]::view-transition-old(root), html[data-ov-vt="space-out"]::view-transition-old(*):only-child { animation-name: ov-vt-out-old; }
+html[data-ov-vt="space-out"]::view-transition-new(root), html[data-ov-vt="space-out"]::view-transition-new(*):only-child { animation-name: ov-vt-out-new; }
 html[data-ov-vt="flat"]::view-transition-old(*):only-child { animation-name: ov-vt-flat-old; }
 html[data-ov-vt="flat"]::view-transition-new(*):only-child { animation-name: ov-vt-flat-new; }
 html[data-ov-vt] body.conv main { view-transition-name: ov-space; }
