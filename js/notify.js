@@ -175,6 +175,9 @@ function rememberNotice(raw) {
   return n.project ? { ...next, project: n.project } : next;
 }
 function openWin(id) {
+  const target = noticeTarget(id);
+  const reuse = mode === 'chat' && currentApp === 'codex' && target && !target.project
+    && winTargetReady({ ...target, threadId: undefined });
   const before = currentComputer()?.id;
   const here = rememberNotice(id);
   if (!here) return false;
@@ -187,6 +190,7 @@ function openWin(id) {
     return true;
   }
   if (!authed) { pendingNotice = id; return false; }
+  if (reuse && here.threadId) return openPickedSession(`thread:${here.windowId}:${here.threadId}`, '', false);
   return send({ t: 'attach', id: here.win, windowId: here.windowId || '', threadId: here.threadId || '', ...(here.project ? { project: here.project } : {}) });
 }
 window.openWin = openWin;
@@ -209,7 +213,7 @@ function finishWinBinding(error) {
 }
 function bindWin(target) {
   finishWinBinding(new Error('目标会话已切换'));
-  if (mode !== 'chat') setMode('chat');
+  if (mode !== 'chat') setMode('chat', false);
   if (winTargetReady(target)) return Promise.resolve();
   return new Promise((resolve, reject) => {
     winBinding = { target, resolve, reject };
@@ -237,7 +241,7 @@ navigator.serviceWorker?.addEventListener('message', e => {
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') resumeComputerConnections();
   else suspendComputerConnections();
-  if (authed && document.visibilityState === 'visible') {
+  if (authed && mode !== 'terminal' && document.visibilityState === 'visible') {
     send({ t: 'usage', automatic: true });
     requestAgentCatalog();
   }
@@ -259,8 +263,8 @@ async function runAgentMenuAction(id, action, extra, target, entry) {
     : { t: 'sessionManage', id, action, ...extra });
   return renderAgentList();
 }
-function openPickedSession(id, title = '') {
-  if (projectEntry?.source === 'computer') ovShowConversation();
+function openPickedSession(id, title = '', enter = projectEntry?.source === 'computer') {
+  if (enter) ovShowConversation();
   pendingAgentOpen = id;
   closeSheet();
   return send({ t: 'openAgent', id, title });
@@ -301,6 +305,11 @@ $('sheet').addEventListener('click', async e => {
   if (sheetKind === 'agent-actions' && b.dataset.agentAction) {
     const id = b.dataset.agentActionId || '', name = b.dataset.agentActionTitle || '';
     const target = agentActionTarget, app = target?.app || currentApp, entry = projectEntry;
+    if (b.dataset.agentAction === 'read') {
+      closeSheet();
+      if (ovMarkRead(target.key)) ovRender();
+      return;
+    }
     if (b.dataset.agentAction === 'copyLink') return copyText(b.dataset.copyLink, b.querySelector('.lbl'), false);
     if (b.dataset.agentAction === 'open') {
       if (target) { closeSheet(); return ovOpen(ovTarget(target)); }
@@ -424,7 +433,7 @@ $('sheet').addEventListener('click', async e => {
     return renderAgentList();
   }
   if (b.dataset.agent) return openPickedSession(b.dataset.agent, b.dataset.agentTitle || '');
-  if (b.dataset.term) { closeSheet(); status('正在切换终端…'); return send({ t: 'openTerminal', id: b.dataset.term }); }
+  if (b.dataset.term) return openRaTerminal(b.dataset.term);
   if ('projectPath' in b.dataset) return openProjectFolders(b.dataset.projectPath, projectSheetOwner(b), true);
   if ('projectBrowse' in b.dataset) return openProjectFolders(b.dataset.projectBrowse, projectSheetOwner(b));
   if ('projectChat' in b.dataset) return openPickedProject({ t: 'openProject', path: b.dataset.projectChat, newSession: true }, projectSheetOwner(b));
@@ -441,7 +450,7 @@ $('sheet').addEventListener('click', async e => {
   if (b.dataset.setting) { status('正在修改…'); return send({ t: 'toggleSetting', label: b.dataset.setting }); }
   if (b.dataset.termDel) {
     if (!await ask(`删除终端「${b.dataset.termName || ''}」？\n里面正在跑的命令会停掉。`, '删除')) return;
-    closeSheet(); status('正在删除终端…'); return send({ t: 'closeTerminal', id: b.dataset.termDel });
+    closeSheet(); return removeRaTerminal(b.dataset.termDel);
   }
   if (b.dataset.fusionPick) { menuSheetKind = 'model'; status('正在修改…'); return send({ t: 'fusionPick', part: b.dataset.fusionPick, value: b.dataset.label }); }
   if (b.dataset.fusion) {
@@ -512,7 +521,8 @@ $('sheet').addEventListener('click', async e => {
   if (b.dataset.groupDelete != null) return deleteComputerGroup(b.dataset.groupDelete);
   if (act === 'toggleChanges') { toggleChangeNotice(); return closeSheet(); }
   if (act === 'executionToggle') return toggleExecutionRecords();
-  if (act === 'newTerm') { closeSheet(); status('正在新建终端…'); return send({ t: 'newTerminal' }); }
+  if (act === 'newTerm') { closeSheet(); return createRaTerminal(); }
+  if (b.dataset.terminalAction) return runTerminalAction(b.dataset.terminalAction, b);
   else if (act === 'localVoiceToggle') return toggleLocalVoice();
   else if (act === 'agentManager' || act === 'agentRefresh') return showAgentManager(true);
   else if (act === 'agentBack') return showMainMenu();

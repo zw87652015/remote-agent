@@ -395,11 +395,19 @@ setInterval(paintGenerationTime, 1000);
 const chatBySel = new Map(), menuCache = new Map();
 const lruPut = (map, key, val, max) => { map.delete(key); map.set(key, val); while (map.size > max) map.delete(map.keys().next().value); };
 let menuSheetKind = '', chatStale = false;
-let currentProject = '', currentTerminal = '';
+let currentProject = '', currentTerminal = '', currentTerminalId = '';
 function updateTitle() {
   document.body.dataset.app = currentApp || '';
   const first = lastChat?.items?.find(it => it.k === 'user');
   const conversation = mode === 'terminal' ? currentTerminal : (lastChat?.title || first?.t || '');
+  if (mode === 'terminal') {
+    $('titleText').textContent = I18N.tr('RA 终端');
+    $('titlePlan').hidden = true;
+    $('titleProject').textContent = [currentComputer()?.name, terminalCwd || currentTerminal].filter(Boolean).join(' · ');
+    $('title').title = [currentComputer()?.name, terminalCwd, currentTerminal].filter(Boolean).join(' · ');
+    paintRail();
+    return;
+  }
   $('titleText').textContent = currentAppName || '连接中…';
   const plan = appPlans[currentApp] || '';
   $('titlePlan').textContent = plan;

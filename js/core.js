@@ -7,7 +7,7 @@ const store = {
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const themeName = () => ({ dark: '深色', light: '浅色', auto: '跟随系统' })[store.get('theme') || 'dark'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const APP_VERSION = 'v378'; // keep in sync with the CACHE name in sw.js
+const APP_VERSION = 'v401'; // keep in sync with the CACHE name in sw.js
 
 let base = null, info = null, ws = null, authed = false;
 let windowReady = false;
@@ -70,7 +70,7 @@ function receiveAgents(m) {
   if (sheetKind === 'agents' && changed) showAgents(list);
 }
 function requestAgentCatalog() {
-  if (authed && windowReady && !navigationPending && ['cursor', 'devin', 'codex'].includes(currentApp))
+  if (mode !== 'terminal' && authed && windowReady && !navigationPending && ['cursor', 'devin', 'codex'].includes(currentApp))
     return send({ t: 'agents', automatic: true, silent: true });
 }
 function openAgentList(refresh = false, entry = null) {
@@ -211,7 +211,7 @@ function finishPending(list) {
 
 const desktopRequests = new Map();
 function desktopAction(obj) {
-  if (obj.t === 'overviewManage' || obj.t === 'saveComputerFile') return true;
+  if (['overviewManage', 'saveComputerFile', 'computerFileAction', 'newTerminal', 'closeTerminal'].includes(obj.t)) return true;
   if (currentApp === 'fusion') return false;
   return obj.t === 'send' ? obj.submit !== false && mode !== 'terminal'
     : obj.t === 'queue' ? obj.action !== 'read'
@@ -223,7 +223,7 @@ function sendDesktopOperation(obj, computer = currentComputer()?.id || '', socke
   socket.send(JSON.stringify(obj));
 }
 function send(obj) {
-  obj.sel ??= viewSel;
+  if (!['terminals', 'openTerminal', 'closeTerminal', 'newTerminal', 'termWrite', 'termResize', 'termSend', 'termComplete', 'termHistory'].includes(obj.t)) obj.sel ??= viewSel;
   if (['attach', 'openAgent', 'openProject'].includes(obj.t)) beginNavigation(obj);
   if (obj.t === 'attach') {
     const name = {cursor: 'Cursor', devin: 'Devin', codex: 'Codex', fusion: 'Fusion'}[String(obj.id || '').split(':')[0]];
@@ -256,7 +256,6 @@ function setWindowReady(ready) {
   if (!ready && typeof cancelVoice === 'function') cancelVoice();
   windowReady = ready;
   if (typeof updateVoiceButton === 'function') updateVoiceButton();
-  $('send').disabled = $('sendNow').disabled = !ready;
   document.dispatchEvent(new Event('composer-state'));
   if (ready) { ovEnterReady(); document.dispatchEvent(new Event('window-ready')); }
 }

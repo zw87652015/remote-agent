@@ -423,8 +423,24 @@ function fusionUsageBars(m) {
   });
 }
 function showTerminals(list) {
-  const rows = list.map(t => `<div class="optRow"><button class="opt ${t.current ? 'cur' : ''}" data-term="${esc(t.id)}"><span class="lbl">${esc(t.title)}</span>${t.current ? '<span class="tag">当前</span>' : ''}</button><button data-term-del="${esc(t.id)}" data-term-name="${esc(t.title)}">删除</button></div>`).join('');
-  openSheet('terminals', `<h3>终端</h3>${rows || '<div class="hint">还没有终端。</div>'}<button class="opt" data-act="newTerm"><span class="lbl">＋ 新建终端</span></button>`);
+  const rows = list.map(t => `<div class="optRow"><button class="opt ${t.id === currentTerminalId ? 'cur' : ''}" data-term="${esc(t.id)}"><span class="lbl">${esc(t.title)}${t.exited ? ` · ${I18N.tr('已退出')}` : ''}<span class="sub ovRaw">${esc(t.cwd)}</span><span class="sub">${t.cols} × ${t.rows}</span></span>${t.id === currentTerminalId ? '<span class="tag">当前</span>' : ''}</button><button data-term-del="${esc(t.id)}" data-term-name="${esc(t.title)}">删除</button></div>`).join('');
+  openSheet('terminals', `<h3>RA 终端</h3>${rows || '<div class="hint">还没有终端。</div>'}<button class="opt" data-act="newTerm"><span class="lbl">＋ 新建终端</span></button>`);
+}
+function showTerminalMore() {
+  const row = (action, label) => `<button class="opt" data-terminal-action="${action}"${terminalActionAvailable(action) ? '' : ' disabled'}><span class="lbl">${I18N.tr(label)}</span></button>`;
+  openSheet('terminal-more', `<h3>RA 终端</h3>${row('size', '尺寸')}${row('refresh', '刷新输出')}`);
+}
+function showTerminalSize() {
+  if (!terminalAvailable()) return;
+  openSheet('terminal-size', `<h3>${I18N.tr('终端尺寸')}</h3><p class="hint">${I18N.tr('尺寸独立于手机屏幕，显示不下时滚动查看。')}</p><form id="terminalSizeForm" class="terminalSizeForm"><label>${I18N.tr('列数')}<input id="terminalCols" type="number" min="2" step="1" required value="${raTerminal.cols}"></label><label>${I18N.tr('行数')}<input id="terminalRows" type="number" min="2" step="1" required value="${raTerminal.rows}"></label><button type="submit">${I18N.tr('应用')}</button></form>`);
+  const target = { id: currentTerminalId, subscription: terminalSubscription, computer: currentComputer().id };
+  $('terminalSizeForm').onsubmit = e => {
+    e.preventDefault();
+    if (!terminalAvailable() || target.computer !== currentComputer().id || target.id !== currentTerminalId || target.subscription !== terminalSubscription) return;
+    send({ t: 'termResize', id: target.id, subscription: target.subscription,
+      cols: Number($('terminalCols').value), rows: Number($('terminalRows').value) });
+    closeSheet();
+  };
 }
 // Devin: which of its two surfaces the desktop shows (chat.surface). Cursor never sets it.
 let currentSurface = null;
@@ -518,6 +534,7 @@ function showAgentActions(id, title, actions = null, target = null) {
   const nativeDisabled = target?.off || target?.dormant ? ' disabled' : '';
   const rows = [
     current?.current ? '' : `<button class="opt" data-agent-action="open" data-agent-action-id="${esc(id)}" data-agent-action-title="${esc(title)}"${target?.dormant && !target.workspace ? ' disabled' : ''}><span class="lbl">打开会话</span></button>`,
+    target?.state === 'done' ? '<button class="opt" data-agent-action="read"><span class="lbl">已读</span></button>' : '',
     `<button class="opt" data-agent-action="favorite" data-agent-action-id="${esc(id)}"${disabled}><span class="lbl">${target ? favorite ? '取消收藏' : '收藏' : favorite ? '取消常用' : '设置为常用'}</span></button>`,
     codexThread ? `<button class="opt" data-agent-action="copyLink" disabled aria-busy="${!target?.off}"><span class="lbl">复制会话链接</span></button>` : '',
     ...(actions || (codexThread ? ['rename', 'archive'] : [])).map(action => `<button class="opt" data-agent-action="${action}" data-agent-action-id="${esc(id)}" data-agent-action-title="${esc(title)}"${nativeDisabled}><span class="lbl">${action === 'rename' ? '重命名' : action === 'delete' ? '删除' : codexThread ? '删除／归档' : '归档'}</span></button>`),
