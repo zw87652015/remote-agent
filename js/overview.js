@@ -30,7 +30,7 @@ const OV_ICON = {
   grid: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="4" width="7" height="7" rx="2"/><rect x="13" y="4" width="7" height="7" rx="2"/><rect x="4" y="13" width="7" height="7" rx="2"/><rect x="13" y="13" width="7" height="7" rx="2"/></svg>',
   star: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="m12 3 2.8 5.7 6.3.9-4.5 4.4 1.1 6.2-5.7-3-5.7 3 1.1-6.2L3 9.6l6.2-.9z"/></svg>',
   arrow: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>',
-  fusion: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m7 8 3 3m4 2 3 3M7 16l3-3m4-2 3-3"/><circle cx="5" cy="6" r="2.5"/><circle cx="19" cy="6" r="2.5"/><circle cx="12" cy="12" r="2.5"/><circle cx="5" cy="18" r="2.5"/><circle cx="19" cy="18" r="2.5"/></svg>',
+  fusion: '<svg viewBox="0 0 24 24" aria-hidden="true"><use href="logo-fusion.svg#fusion"/></svg>',
 };
 const ovSt = new Map(), ovBusy = new Set(), ovErr = new Map();
 const ovCollapsed = new Set();
@@ -41,6 +41,7 @@ const ovMain = $('overview').querySelector('.ov-main');
 const ovDone = (() => { try { return JSON.parse(store.get('ov-done') || '{}'); } catch { return {}; } })();
 const ovStoppedSeen = JSON.parse(store.get('ov-stopped-seen') || '{}');
 let ovEnterRequested = false;
+let ovOpening = null;
 let ovOpenRequest = 0;
 let ovToolState = null;
 const ovComposerControls = { mic: $('mic'), stop: $('stop'), attachments: $('attachments').parentElement };
@@ -359,6 +360,7 @@ function ovSessTile(r) {
   const cls = ['ov-tile', 'ov-session', 'ov-compact', `ov-st-${r.state}`, open && 'ov-open', r.off && 'ov-off', ovBatch && 'ov-selecting', selected && 'ov-selected'].filter(Boolean).join(' ');
   ovSig.push(`${r.key}:${cls}`);
   return `<div class="${cls}" data-ov-session="${esc(r.key)}" style="--p:${fill}%;view-transition-name:${ovTname(r.key)}"${open ? '' : ` data-ov="sess" data-id="${esc(r.key)}"`}${ovBatch ? ` role="checkbox" aria-checked="${selected}" aria-disabled="${!ovCanManage(r) || ovBatch.running}" tabindex="0"` : ''}>
+    <span class="ov-card-surface" aria-hidden="true"></span>${!open && !ovBatch ? ovOpenFeedback(ovTarget(r)) : ''}
     ${ovBatch && ovCanManage(r) ? `<span class="ov-check" aria-hidden="true">${selected ? '✓' : ''}</span>` : ''}
     ${ovRecLogo(r, open ? '<span class="ov-usage" data-ov-preserve></span>' : '')}<div class="ov-state"><span class="ov-badge">${esc(ovBadge(r))}</span><span class="ov-time">${esc(ovTime(r))}</span></div>
     <div class="ov-title ovRaw">${esc(r.title)}</div>
@@ -369,7 +371,33 @@ function ovSessTile(r) {
   </div>`;
 }
 function ovOpenLink(r, cls = '') {
-  return `<button class="ov-link${cls}" data-ov="full" data-id="${esc(r.key)}" data-t="${esc(JSON.stringify(ovTarget(r)))}"${r.dormant && !r.workspace ? ' disabled' : ''}>${ovT('打开对话')}</button>`;
+  const target = ovTarget(r);
+  return `<button class="ov-link${cls}" data-ov="full" data-id="${esc(r.key)}" data-t="${esc(JSON.stringify(target))}"${r.dormant && !r.workspace ? ' disabled' : ''}>${ovOpenLabel(target)}</button>`;
+}
+function ovOpenState(target) {
+  return sameWinTarget(ovOpening?.target, target) ? ovOpening : null;
+}
+function ovOpenLabel(target, label = '打开对话') {
+  const opening = ovOpenState(target);
+  return ovT(opening ? opening.phase === 'error' ? '重试打开' : '正在打开…' : label);
+}
+function ovOpenFeedback(target) {
+  const opening = ovOpenState(target);
+  return opening ? `<small class="ov-opening ${opening.phase === 'error' ? 'ov-opening-error' : ''}" role="status">${esc(opening.message)}</small>` : '';
+}
+function ovCancelOpening() {
+  ovOpenRequest++;
+  ovEnterRequested = false;
+  ovOpening = null;
+}
+function ovNavigationChanged(navigation, phase, message) {
+  if (!sameWinTarget(ovOpening?.target, navigation?.target)) return;
+  if (phase === 'opening') ovOpening.navigationId = navigation.id;
+  else if (ovOpening.navigationId !== navigation.id) return;
+  if (phase === 'ready') ovOpening = null;
+  else Object.assign(ovOpening, { phase, message });
+  if (phase === 'error') ovEnterRequested = false;
+  ovRender();
 }
 function ovUsageHtml(key) {
   const data = ovComposerReady(key) ? currentUsageMeters() : { context: null, quota: [] };
@@ -437,13 +465,15 @@ function ovCard(r) {
       + composer
       + (r.devin && r.state === 'done' && r.acceptAll ? `<button class="ov-btn ov-pri" data-ov="accept" data-id="${key}"${dis}>接受改动</button>` : '');
   }
-  const err = ovErr.has(r.key) ? `<div class="ov-errbox">${esc(ovErr.get(r.key))}</div>` : '';
+  const opening = ovOpenState(ovTarget(r)), errorMessage = ovErr.get(r.key);
+  const err = ovErr.has(r.key) && (!opening || errorMessage !== opening.message) ? `<div class="ov-errbox">${esc(errorMessage)}</div>` : '';
   const off = r.off ? '<div class="ov-hint">电脑离线</div>' : '';
   const queueCount = ready ? queuedMessages().count : 0;
   const queue = queueCount ? `<button class="ov-queue" data-ov="queue" data-id="${key}" aria-haspopup="dialog">${I18N.tr('排队')} ${queueCount} ▾</button>` : '';
   const tools = canReply ? `<div class="ov-tools">${['add', 'img', 'uploadDoc'].map(id => tool(id)).join('')}<span data-ov-node="mic:${key}" data-ov-control="mic" data-ov-preserve></span><span data-ov-node="stop:${key}" data-ov-control="stop" data-ov-preserve></span>${tool('insertNewline')}${queue}</div>` : '';
-  const message = ready && $('msg').className !== 'quiet' ? $('msg').textContent : '';
-  const toolStatus = tools ? `<div class="ov-tool-status ${$('msg').className}" role="status">${esc(message)}</div>` : '';
+  const message = opening ? opening.message : ready && $('msg').className !== 'quiet' ? $('msg').textContent : '';
+  const messageClass = opening ? opening.phase === 'error' ? 'err' : '' : $('msg').className;
+  const toolStatus = tools || opening ? `<div class="ov-tool-status ${messageClass}" role="status">${esc(message)}</div>` : '';
   return status + body + off + err + `<div class="ov-cfoot">${tools}${ovOpenLink(r)}</div>` + toolStatus;
 }
 function ovSessionGroup(label, recs, id) {
@@ -486,6 +516,7 @@ function ovPlan() {
   const crumbs = [`<label class="ov-scope"><select class="ovRaw" data-ov-computer aria-label="${ovT('电脑范围')}"><option value=""${!ovS.comp ? ' selected' : ''}>${ovT('全部电脑')}</option>${ovList.map(e => `<option value="${esc(e.id)}"${ovS.comp === e.id ? ' selected' : ''}>${esc(e.name)}</option>`).join('')}</select><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></label>`];
   if (ovS.proj) crumbs.push(`<i>›</i><button data-ov="crumb" data-v="proj"><span class="ovRaw">${esc(projs.find(p => p.key === ovS.proj)?.name || '')}</span></button>`);
   if (ovS.level === 'favorites') crumbs.splice(0, crumbs.length, `<span class="ov-favorites-title">${ovT('收藏')}</span>`);
+  if (ovS.level === 'fusion') crumbs.unshift('<strong class="ov-fusion-title">Fusion ·</strong>');
   const levels = [['sessions', ovT('概览'), OV_ICON.grid], ['projects', ovT('项目'), OV_ICON.folder], ['favorites', ovT('收藏'), OV_ICON.star], ['fusion', 'Fusion', OV_ICON.fusion]]
     .map(([v, l, ic]) => `<button class="ov-lv${ovS.level === v ? ' on' : ''}" data-ov="level" data-v="${v}"><i>${ic}${v === 'sessions' && anyWait && ovS.level !== 'sessions' ? '<span class="ov-dot"></span>' : ''}</i><span>${l}</span></button>`).join('');
   const summary = (ovS.level === 'fusion' ? [] : [['total', ovT(ovS.level === 'favorites' ? '收藏会话' : '全部会话'), 'var(--fg-3)'], ['wait', ovT('需要你'), 'var(--ov-amber)'], ['run', ovT('运行中'), 'var(--accent)'], ['err', ovT('已停止'), 'var(--err)'], ['done', '今日完成', 'var(--ok)'], ['inactive', ovT('不常用'), 'var(--fg-4)']])
@@ -635,6 +666,8 @@ function ovRestore(st) {
   ovRender(true, st?.ovScroll || 0);
 }
 function ovMove(change, push = false) {
+  ovCancelOpening();
+  releaseFusionView();
   ovClearBatch();
   ovSaveHistory();
   const depth = history.state?.ovDepth || 0;
@@ -644,6 +677,7 @@ function ovMove(change, push = false) {
   ovRender(true, 0);
 }
 function ovCloseCard() {
+  ovCancelOpening();
   ovS.open = null; ovSaveHistory(); return ovRender(true);
 }
 function ovUp() {
@@ -824,6 +858,7 @@ function ovMountComposerControls() {
 }
 function ovPrepareVisibleComposer() {
   const input = $('ovBoard').querySelector('[data-ov-input]');
+  if (ovOpening && input && !sameWinTarget(ovOpening.target, ovTarget(ovRecs().find(r => r.key === input.dataset.ovInput)))) return;
   if (input && ovToolState?.key !== input.dataset.ovInput) ovPrepareTools(input.dataset.ovInput);
 }
 function ovPrepareTools(key) {
@@ -869,14 +904,21 @@ function ovLocateReply() {
 async function ovOpen(target) {
   const request = ++ovOpenRequest;
   if (target.project && !target.project.root) return status(ovT('尚未读取到项目路径，请在电脑上打开项目后重试'), false);
+  releaseFusionView();
+  const pending = winTargetPending(target);
+  ovOpening = { target, phase: 'opening', navigationId: pending ? navigationPending.id : undefined,
+    message: ovT(pending ? '正在等待会话内容…' : '正在连接并打开会话…') };
+  if (mode !== 'chat') setMode('chat', false);
   const state = ovToolState;
   if (state && winBinding?.target === state.target && navigationPending && !target.project
-    && state.target.computer === target.computer && state.target.win === target.win
-    && state.target.windowId === target.windowId && state.target.threadId === target.threadId) {
+    && sameWinTarget(state.target, target)) {
+    ovOpening.navigationId = navigationPending.id;
+    ovRender();
     ovEnterRequested = false;
     if (await state.ready && request === ovOpenRequest && ovToolState === state && ovComposerReady(state.key)) ovShowConversation();
     return;
   }
+  if (state && !sameWinTarget(state.target, target)) ovReleaseComposer();
   if (target.win === 'fusion') { ovS.level = 'fusion'; ovS.proj = null; ovSaveHistory(); }
   const json = JSON.stringify(target), e = ovList.find(x => x.id === target.computer);
   if (e.c.key === currentComputer()?.key) return openWin(json);
@@ -896,6 +938,7 @@ async function ovOpen(target) {
 function conversationVisible() { return document.visibilityState === 'visible' && document.body.classList.contains('conv'); }
 function ovShowConversation() {
   if (document.body.classList.contains('conv')) return;
+  ovOpening = null;
   ovClearBatch();
   ovSaveHistory();
   history.pushState({ ...ovHistory(), ovConv: true, ovDepth: (history.state?.ovDepth || 0) + 1 }, '');
@@ -903,14 +946,16 @@ function ovShowConversation() {
   document.body.classList.add('conv');
   autosize(); ovVisible();
 }
-function ovConversationOpened(enter = true) { ovEnterRequested = enter; }
+function ovConversationOpened(enter = true, target) {
+  if (enter || !sameWinTarget(ovOpening?.target, target)) ovEnterRequested = enter;
+}
 function ovEnterReady() {
   if (!ovEnterRequested || !authed || !windowReady || navigationPending) return;
   ovEnterRequested = false;
   ovShowConversation();
 }
 function ovLeave(st = history.state) {
-  ovEnterRequested = false;
+  ovCancelOpening();
   document.body.classList.remove('conv');
   ovVisible();
   ovRestore(st);
@@ -952,6 +997,7 @@ $('overview').addEventListener('click', e => {
   switch (a) {
     case 'sess':
       if (ovBatch) return ovSelectSession(ovRecs().find(r => r.key === id));
+      ovCancelOpening();
       ovS.open = ovS.open === id ? null : id; ovSaveHistory(); return ovRender(true, undefined, !!ovS.open);
     case 'close': return ovCloseCard();
     case 'lane': case 'jump': return ovFocusSession(id);
