@@ -2,7 +2,7 @@
 const OV_ROOT = { level: 'sessions', comp: null, proj: null, open: null };
 const ovS = { ...OV_ROOT, level: store.get('ov-level') || OV_ROOT.level };
 const OV_RANK = { done: 0, wait: 1, err: 1, run: 2, idle: 3, unknown: 4 };
-const OV_AGENT = { cursor: 'Cursor', devin: 'Devin', codex: 'Codex' };
+const OV_AGENT = { cursor: 'Cursor', devin: 'Devin', codex: 'Codex', opencode: 'OpenCode' };
 const OV_EN = {
   '返回概览': 'Back to overview', '上一级': 'Up one level', '菜单': 'Menu', '全部': 'All', '在线': 'Online', '项目': 'Projects', '会话': 'Sessions',
   '概览': 'Overview', '全部电脑': 'All computers', '电脑范围': 'Computer scope', '不常用': 'Infrequent', '打开对话': 'Open conversation', '进行中': 'In progress',
@@ -238,12 +238,12 @@ function ovNotify(r, kind) {
 function ovRecsOf(e, st) {
   const off = ovComputerStatus(e, st) !== 'online', out = [];
   for (const s of st.data.sessions) {
-    const key = ovNativeKey(e.id, s), done = s.run?.status === 'completed' && ovDone[key]?.runId === s.run.id ? ovDone[key].at : 0;
+    const key = ovNativeKey(e.id, s), done = s.run?.status === 'completed' && ovDone[key] && ovDone[key].runId === s.run.id ? ovDone[key].at : 0;
     const since = s.startedAt || st.first.get(key);
     const stopped = s.run?.status === 'stopped' && ovStoppedSeen[key] !== s.run.id;
-    const state = s.dormant ? 'idle' : s.waiting ? 'wait' : s.busy ? 'run' : s.run?.status === 'error' || stopped ? 'err'
+    const state = s.dormant && !s.cachedStatusAt ? 'idle' : s.waiting ? 'wait' : s.busy ? 'run' : s.run?.status === 'error' || stopped ? 'err'
       : s.statusKnown === false || s.run?.status === 'unknown' ? 'unknown' : done ? 'done' : 'idle';
-    out.push({ key, comp: e.id, off, state, run: s.run, busy: !!s.busy, wait: s.waiting || '',
+    out.push({ key, comp: e.id, off, state, run: s.run, busy: !!s.busy, wait: s.waiting || '', cachedStatusAt: s.cachedStatusAt || 0,
       waitText: s.waitingText || '', last: s.last || '', tasks: s.tasks, actions: s.actions || [], devin: !!s.devin, changed: s.changed || 0, acceptAll: !!s.acceptAll,
       win: s.win, windowId: s.windowId, threadId: s.threadId || '', app: s.app, title: s.title || '', project: `${e.id}|${s.projectId}`, projName: s.project,
       start: since ? since - st.offset : 0, ended: done || 0, used: s.lastUsed ? s.lastUsed - st.offset : 0, changes: s.changes || null, favorite: s.favorite === true, common: agentSessionCommon(s),
@@ -251,7 +251,8 @@ function ovRecsOf(e, st) {
   }
   return out;
 }
-const ovRecs = () => ovList.flatMap(e => ovSt.get(e.id)?.data ? ovRecsOf(e, ovSt.get(e.id)) : []);
+const ovRecs = () => [...ovList.flatMap(e => ovSt.get(e.id)?.data ? ovRecsOf(e, ovSt.get(e.id)) : []),
+  ...(ovS.level === 'favorites' ? fusionWorkbenchRecords().filter(row => row.favorite) : [])];
 function ovScopedRecs(all = ovRecs()) {
   if (ovS.level === 'favorites') return [...new Map(all.filter(r => r.favorite).map(r => [ovSessionIdentity(r), r])).values()];
   return all.filter(r => !r.dormant && (!ovS.comp || r.comp === ovS.comp) && (!ovS.proj || r.project === ovS.proj));
@@ -268,7 +269,7 @@ function ovProjects(all) {
 }
 function ovBadge(r) {
   if (r.off) return ovT('离线');
-  if (r.dormant) return ovT('项目未打开');
+  if (r.dormant && !r.cachedStatusAt) return ovT('项目未打开');
   if (r.state === 'wait') return r.fusion ? ovT('等你确认') : r.wait.startsWith('q:') ? ovT('问题') : ovT('待确认');
   if (r.state === 'run') return r.fusion ? fusionStatus(r.status) : ovT(ovS.proj ? '正在工作' : '运行中');
   return { done: ovT('已完成'), err: ovT(r.run?.status === 'error' ? '执行失败' : '已停止'), idle: ovT(!r.common ? '不常用' : '空闲'), unknown: ovT('状态待确认') }[r.state];
@@ -388,6 +389,7 @@ function ovOpenFeedback(target) {
 function ovCancelOpening() {
   ovOpenRequest++;
   ovEnterRequested = false;
+  if (ovOpening && !sameWinTarget(winBinding?.target, ovOpening.target)) cancelNavigation(ovOpening.target);
   ovOpening = null;
 }
 function ovNavigationChanged(navigation, phase, message) {
@@ -436,7 +438,7 @@ function ovChangesRow(r) {
 }
 function ovRunHtml(r) {
   const value = ovPreviews.get(r.key)?.value, tasks = value?.tasks || r.tasks;
-  const model = value?.model || '';
+  const model = [value?.model, modelEffortLabel(value?.model || '', value?.effort)].filter(Boolean).join(' · ');
   const progress = tasks?.total > 0 ? tasks : null;
   const count = progress ? `${ovT('已完成')} ${progress.done}/${progress.total}` : ovT(value ? '未提供任务进度' : '正在读取运行状态…');
   const tools = value?.tools || [];
@@ -497,7 +499,8 @@ function ovSessions(recs, scope) {
 function ovEmpty(text) { return `<div class="ov-empty">${text}</div>`; }
 function ovBoard(all, projs, scoped) {
   if (ovS.level === 'fusion') return fusionBoard();
-  if (ovS.level === 'favorites') return scoped.sort(ovCompare).map(ovSessTile).join('')
+  if (ovS.level === 'favorites') return scoped.sort(ovCompare).map(row => row.fusion
+    ? fusionWorkbenchTile(ovList.find(entry => entry.id === row.comp), fusionWorkspaces.get(row.comp).runs.find(run => run.id === row.threadId)) : ovSessTile(row)).join('')
     || ovEmpty(`${ovT('还没有收藏会话')}<small>${ovT('长按会话卡片可收藏')}</small>`);
   if (!ovS.proj) {
     const list = ovList.filter(e => !ovS.comp || e.id === ovS.comp).sort((a, b) => ovOn(b) - ovOn(a));
@@ -533,9 +536,9 @@ function ovPatch(container, html) {
   const template = document.createElement('template');
   template.innerHTML = html;
   const active = document.activeElement;
-  const anchor = $('mic').classList.contains('on') ? $('mic') : active;
+  const anchor = ovComposerControls.mic.classList.contains('on') ? ovComposerControls.mic : active;
   const key = node => node.nodeType === 1 ? [node.nodeName, node.getAttribute('data-ov') || '',
-    node.getAttribute('data-ov-session') || node.getAttribute('data-ov-node') || node.getAttribute('data-ov-input') || node.getAttribute('data-ov-scroll')
+    node.getAttribute('data-ov-session') || node.getAttribute('data-ov-menu') || node.getAttribute('data-ov-node') || node.getAttribute('data-ov-input') || node.getAttribute('data-ov-scroll')
       || node.getAttribute('data-id') || node.getAttribute('data-v') || node.getAttribute('class')?.split(' ')[0] || ''].join('|') : node.nodeName;
   const patch = (parent, next) => {
     const previous = [...parent.childNodes], pool = new Map();
@@ -662,7 +665,7 @@ function ovRestore(st) {
   for (const id of st?.ovCollapsed || []) ovCollapsed.add(id);
   ovExpanded.clear();
   for (const id of st?.ovExpanded || []) ovExpanded.add(id);
-  if (ovS.level === 'fusion') refreshFusionWorkspace();
+  if (['fusion', 'favorites'].includes(ovS.level)) refreshFusionWorkspace();
   ovRender(true, st?.ovScroll || 0);
 }
 function ovMove(change, push = false) {
@@ -672,7 +675,7 @@ function ovMove(change, push = false) {
   ovSaveHistory();
   const depth = history.state?.ovDepth || 0;
   Object.assign(ovS, change);
-  if (ovS.level === 'fusion') refreshFusionWorkspace();
+  if (['fusion', 'favorites'].includes(ovS.level)) refreshFusionWorkspace();
   history[push ? 'pushState' : 'replaceState']({ ...ovHistory(0), ovDepth: depth + Number(push) }, '');
   ovRender(true, 0);
 }
@@ -723,7 +726,7 @@ async function ovSend(key, act, extra, ok) {
 }
 async function ovSessionRequest(r, action, extra = {}) {
   const entry = ovList.find(e => e.id === r.comp), route = '/api/overview/session';
-  if (['rename', 'archive', 'delete', 'remove'].includes(action)) {
+  if (r.fusion || ['rename', 'archive', 'delete', 'remove'].includes(action)) {
     const link = computerSockets.get(entry.c.key), device = link?.auth?.device;
     const target = { ...ovTarget(r), action, ...extra }, identity = JSON.stringify([device, target]);
     const existing = [...desktopRequests.values()].find(request => request.overview === identity);
@@ -747,13 +750,15 @@ async function ovManageSession(r, action, extra = {}) {
   ovBusy.add(r.key); ovRender();
   try {
     const value = await ovSessionRequest(r, action, extra);
-    await ovFetch(ovList.find(e => e.id === r.comp));
+    if (r.fusion) fusionUpdateWorkspace(r.comp, value.run);
+    else await ovFetch(ovList.find(e => e.id === r.comp));
     return value;
   } finally { ovBusy.delete(r.key); ovRender(); }
 }
 function ovSessionMenu(key) {
-  const r = ovRecs().find(r => r.key === key);
-  if (!r || r.fusion) return;
+  const r = ovRecs().find(r => r.key === key) || fusionWorkbenchRecords().find(r => r.key === key);
+  if (!r) return;
+  if (r.fusion) return showAgentActions(r.threadId, r.title, ['tasks', 'config', 'rename', 'stop', 'remove'], r);
   const id = r.app === 'codex' ? `thread:${r.windowId}:${r.threadId}` : r.threadId;
   showAgentActions(id, r.title, null, r);
 }
@@ -868,9 +873,9 @@ function ovPrepareTools(key) {
   const refresh = winTargetReady(state.target);
   ovErr.delete(key);
   mentionHide();
-  state.ready = bindWin(state.target).then(() => {
+  state.ready = bindWin(state.target).then(target => {
     if (ovToolState !== state || ovS.open !== key || document.body.classList.contains('conv')) return false;
-    state.phase = 'ready'; state.sel = viewSel;
+    state.target = target; state.phase = 'ready'; state.sel = viewSel;
     if (refresh) send({ t: 'attachments' });
     ovReflectComposer();
     return true;
@@ -919,7 +924,7 @@ async function ovOpen(target) {
     return;
   }
   if (state && !sameWinTarget(state.target, target)) ovReleaseComposer();
-  if (target.win === 'fusion') { ovS.level = 'fusion'; ovS.proj = null; ovSaveHistory(); }
+  if (target.win === 'fusion' && ovS.level !== 'favorites') { ovS.level = 'fusion'; ovS.proj = null; ovSaveHistory(); }
   const json = JSON.stringify(target), e = ovList.find(x => x.id === target.computer);
   if (e.c.key === currentComputer()?.key) return openWin(json);
   const resume = mode === 'chat' && target.win.split(':')[0] === 'codex' && !e.foreign && resumableComputerSocket(e.c);
@@ -971,9 +976,9 @@ function ovCancelHold() { clearTimeout(ovHold?.timer); ovHold = null; }
 $('overview').addEventListener('pointerdown', e => {
   if (e.target.closest('.ov-input-history, [data-ov="tool"][data-v="insertNewline"], .ov-mentions') && e.pointerType === 'mouse') e.preventDefault();
   ovCancelHold(); ovHeld = '';
-  const card = e.target.closest('[data-ov-session]');
+  const card = e.target.closest('[data-ov-session], [data-ov-menu]');
   if (!card || ovBatch || e.button !== 0 || e.target.closest('button, summary, input, textarea, a, [contenteditable], .ov-last, .ov-run-tools, .ov-attachments')) return;
-  const key = card.dataset.ovSession;
+  const key = card.dataset.ovSession || card.dataset.ovMenu;
   ovHold = { x: e.clientX, y: e.clientY, timer: setTimeout(() => {
     ovHeld = key; ovCancelHold(); ovSessionMenu(key);
   }, 500) };
@@ -987,7 +992,8 @@ $('overview').addEventListener('click', e => {
   if (e.target.closest('[data-ov-control]')) return;
   if (e.target.closest('.ov-mentions')) return pickMention(e);
   if (e.target.dataset.ovInput) return ovLocateReply();
-  if (ovHeld && e.target.closest('[data-ov-session]')?.dataset.ovSession === ovHeld) { ovHeld = ''; e.preventDefault(); return; }
+  const heldCard = e.target.closest('[data-ov-session], [data-ov-menu]');
+  if (ovHeld && (heldCard?.dataset.ovSession || heldCard?.dataset.ovMenu) === ovHeld) { ovHeld = ''; e.preventDefault(); return; }
   const el = e.target.closest('[data-ov]');
   if (!el) {
     if (ovS.open && e.target.closest('.ov-main') && !e.target.closest('[data-ov-session], button, a, input, textarea, select, summary, [contenteditable]')) return ovCloseCard();

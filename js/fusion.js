@@ -8,7 +8,7 @@ let fusionFocusInteraction = '', fusionPendingGroup = null;
 let fusionPanelOpen = false, fusionPanelCollapsed = false, fusionChatKey = '', fusionFocusTask = '', fusionFocusPending = false;
 const fusionStateKey = (computer, run) => `${computer}|${run}`;
 const fusionResultSeen = JSON.parse(store.get('fusion-result-seen') || '{}');
-const fusionStatus = value => I18N.tr(({ ready: '待启用', running: '运行中', waiting: '等待新事件', awaiting_user: '需要你处理',
+const fusionStatus = value => I18N.tr(({ ready: '待启用', running: '运行中', waiting: '等待新事件', awaiting_user: '待处理',
   recovering: '核对原生执行', blocked: '执行阻塞', stopping: '正在停止', stopped: '已停止', completed: '已完成', closing: '核对交付',
   planned: '已规划', queued: '排队中', preparing: '准备中', submitting: '提交中', unknown: '结果待核对', awaiting_review: '等待主 Agent 验收',
   accepted: '已验收', needs_work: '需要补做', failed: '执行失败', cancelled: '已取消', ended: '本轮结束' })[value] || value || '');
@@ -40,18 +40,59 @@ function fusionMarkResultRead() {
     || navigationPending || chatStale) return false;
   const computer = currentComputer();
   if (run.computer !== computer?.id || lastChat?.thread !== computer.threadId) return false;
+  return fusionReadResult(run);
+}
+function fusionReadResult(run) {
   const key = fusionStateKey(run.computer, run.id);
+  if (!run.overview.resultKey) return false;
   if (fusionResultSeen[key] === run.overview.resultKey) return false;
   fusionResultSeen[key] = run.overview.resultKey;
   store.set('fusion-result-seen', JSON.stringify(fusionResultSeen));
   return true;
+}
+function fusionWorkbenchRecord(run) {
+  const entry = ovList.find(value => value.id === run.computer), state = fusionOverviewState(run);
+  return { key: 'fusion:' + fusionStateKey(run.computer, run.id), comp: run.computer, app: 'fusion', win: 'fusion', windowId: 'fusion',
+    threadId: run.id, fusion: true, main: run.main, title: run.title, projName: run.project.name,
+    workspace: run.project.root, host: run.project.host, project: run.project.id, state, busy: state === 'run',
+    favorite: run.favorite === true, resultKey: run.overview.resultKey, removal: run.removal, common: true, used: run.updated,
+    off: ovComputerStatus(entry) !== 'online' };
+}
+function fusionWorkbenchRecords() {
+  return ovList.flatMap(entry => (fusionWorkspaces.get(entry.id)?.runs || []).map(fusionWorkbenchRecord));
+}
+function fusionOpenTarget(run) {
+  return run.main.bindingId ? run.main.target
+    : { computer: run.computer, win: 'fusion', windowId: 'fusion', threadId: run.id };
+}
+function fusionWorkbenchTile(entry, run) {
+  const online = ovComputerStatus(entry) === 'online', state = fusionOverviewState(run);
+  const target = fusionOpenTarget(run);
+  const label = ({ run: '运行中', wait: '待处理', done: '已完成', err: '执行阻塞', idle: '空闲' })[state];
+  const progress = run.tasks.total ? run.tasks : run.works, context = `${entry.name} · ${run.project.name}`;
+  return `<div class="ov-tile ov-session ov-compact ov-st-${state} fusion-workbench${!online ? ' ov-off' : ''}" style="--p:${progress.total ? progress.done / progress.total * 100 : 0}%" role="button" tabindex="0" data-fusion-open="${esc(run.id)}" data-computer="${esc(entry.id)}" data-ov-menu="${esc(fusionWorkbenchRecord(run).key)}">`
+    + `<span class="ov-card-surface" aria-hidden="true"></span>${ovOpenFeedback(target)}${ovLogo(fusionLogo('fusion'))}`
+    + `<div class="ov-state"><span class="ov-badge">${I18N.tr(ovT(label))}</span></div><div class="ov-title ovRaw">${esc(run.title)}</div>`
+    + `<div class="ov-context ovRaw" title="${esc(context)}">${esc(context)}</div>`
+    + `<div class="ov-foot"><span class="ov-num">${run.tasks.done}<small>/${run.tasks.total} ${I18N.tr('任务')}</small></span>${ovSeg(run.overview.counts)}</div></div>`;
+}
+function fusionUpdateWorkspace(computer, run) {
+  const workspace = fusionWorkspaces.get(computer);
+  if (workspace) workspace.runs = [...(run.removedAt ? [] : [run]), ...workspace.runs.filter(row => row.id !== run.id)].sort((a, b) => b.updated - a.updated);
+  if (activeFusionController?.id === run.id && activeFusionController.computer === computer) {
+    if (run.removedAt) {
+      releaseFusionView(); activeFusionController = null;
+      if (lastChat?.fusionRun?.id === run.id) lastChat.fusionRun = null;
+    } else activeFusionController = run;
+    paintFusionRun(); updateTitle();
+  }
 }
 function fusionBoard() {
   const computers = ovList.filter(value => !ovS.comp || value.id === ovS.comp);
   const all = computers.flatMap(entry => (fusionWorkspaces.get(entry.id)?.runs || []).map(run => ({ entry, run })));
   const counts = { run: 0, wait: 0, done: 0, err: 0, idle: 0 };
   for (const { run } of all) counts[fusionOverviewState(run)]++;
-  const stats = [['run', '运行中'], ['wait', '需要你处理'], ['done', '已完成'], ['err', '执行阻塞']]
+  const stats = [['run', '运行中'], ['wait', '待处理'], ['done', '已完成'], ['err', '执行阻塞']]
     .filter(([key]) => counts[key]).map(([key, label]) => `<span class="fusion-stat fusion-tone-${key}"><i></i><b>${counts[key]}</b>${I18N.tr(label)}</span>`).join('');
   const attention = all.flatMap(({ entry, run }) => run.overview.attention.map(item =>
     `<button class="ov-lane-item" ${item.kind === 'question' || item.kind === 'plan'
@@ -67,23 +108,11 @@ function fusionBoard() {
         + `<button class="ov-computer-toggle" data-fusion-fold="${esc(entry.id)}" aria-expanded="${!folded}"><i class="fusion-computer-dot${online ? ' online' : ''}"></i><span class="lbl"><strong class="ovRaw">${esc(entry.name)}</strong><small>${!online ? I18N.tr('未连接') + ' · ' : ''}${runs.length} ${I18N.tr('个工作台')}${running ? ' · ' + running + ' ' + I18N.tr('运行中') : ''}</small></span></button>`
         + `<button class="ov-computer-action" data-fusion-new data-computer="${esc(entry.id)}" ${online ? '' : 'disabled'}>＋ ${I18N.tr('启用')}</button>`
         + `<button class="ov-computer-fold" data-fusion-fold="${esc(entry.id)}" aria-expanded="${!folded}" aria-label="${I18N.tr(folded ? '展开电脑' : '收起电脑')}"><svg class="ov-computer-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m9 5 7 7-7 7"/></svg></button></div>`
-        + (folded ? '' : `<div class="ov-board fusion-grid">${!workspace ? `<p class="hint">${I18N.tr(online ? '正在读取 Fusion 状态…' : '电脑尚未连接')}</p>` : !runs.length ? `<p class="hint">${I18N.tr('暂无主工作台')}</p>` : runs.map(run => {
-          const state = fusionOverviewState(run), resultRead = state !== run.overview.state;
-          const target = { computer: entry.id, win: 'fusion', windowId: 'fusion', threadId: run.id };
-          const wide = run.tasks.running || ['running', 'recovering', 'stopping'].includes(run.status);
-          const label = ({ run: '运行中', wait: '需要你处理', done: '已完成', err: '执行阻塞', idle: '空闲' })[state];
-          const current = resultRead ? null : run.overview.current;
-          const progress = run.tasks.total ? run.tasks : run.works;
-          return `<div class="ov-tile ov-st-${state} fusion-workbench${wide ? ' ov-wide' : ''}${!online ? ' ov-off' : ''}" style="--p:${progress.total ? progress.done / progress.total * 100 : 0}%" role="button" tabindex="0" data-fusion-open="${esc(run.id)}" data-computer="${esc(entry.id)}">`
-            + `<div class="ov-logo fusion-logo-stack">${run.overview.apps.map(fusionLogo).join('')}</div><span class="ov-badge">${I18N.tr(ovT(label))}</span>`
-            + `<div class="ov-title ovRaw">${esc(run.title)}</div><div class="ov-now ovRaw">${esc(!resultRead && run.blockedReason || (current ? current.text + ' · ' + fusionTaskStatus(current) : run.project.name))}</div>`
-            + `<div class="ov-foot"><span class="ov-num">${run.tasks.done}<small>/${run.tasks.total} ${I18N.tr('任务')}</small></span>${ovSeg(run.overview.counts)}</div>`
-            + `<div class="fusion-open-feedback">${ovOpenFeedback(target)}<span>${ovOpenLabel(target, '')}</span></div></div>`;
-        }).join('')}</div>`) + '</section>';
+        + (folded ? '' : `<div class="ov-board fusion-grid">${!workspace ? `<p class="hint">${I18N.tr(online ? '正在读取 Fusion 状态…' : '电脑尚未连接')}</p>` : !runs.length ? `<p class="hint">${I18N.tr('暂无主工作台')}</p>` : runs.map(run => fusionWorkbenchTile(entry, run)).join('')}</div>`) + '</section>';
     }).join('') + '</div>';
 }
 function fusionLogo(app) { return `<span class="fusion-logo" data-logo="${esc(app)}" aria-label="${esc(OV_AGENT[app] || app)}"></span>`; }
-function fusionTaskStatus(task) { return task.needsUser ? I18N.tr('需要你处理') : fusionStatus(task.status); }
+function fusionTaskStatus(task) { return task.needsUser ? I18N.tr('待处理') : fusionStatus(task.status); }
 function fusionSurface() { return fusionViewOwner?.surface === 'panel' ? $('fusionPanelBody') : $('sheet'); }
 function fusionChatActive(run = currentFusionRun()) {
   return !!run && document.body.classList.contains('conv') && mode === 'chat';
@@ -160,7 +189,11 @@ function currentFusionRun() {
 }
 function openFusionController(computer, id) {
   const run = fusionWorkspaces.get(computer)?.runs.find(row => row.id === id) || fusionRunFor(computer, id) || currentFusionRun();
-  if (run.main.bindingId) { closeSheet(); return ovOpen({ computer, win: 'fusion', windowId: 'fusion', threadId: id }); }
+  if (run.main.bindingId) {
+    closeSheet();
+    if (ovS.level !== 'favorites') { ovS.level = 'fusion'; ovS.proj = null; ovSaveHistory(); }
+    return ovOpen(fusionOpenTarget(run));
+  }
   return readFusionView(computer, id, 'config');
 }
 function focusFusionInput(computer, id) {
@@ -421,7 +454,7 @@ function fusionNativeNode(run, item) {
   node.dataset.fusionNativeCard = item.id; node.dataset.fusionRun = run.id; node.dataset.fusionComputer = run.computer;
   const signature = JSON.stringify(item);
   if (node._nativeInteraction !== signature) fusionPreserveSheet(() => {
-    node.innerHTML = `<div class="fusion-dispatch-head"><strong>${I18N.tr('需要你处理')} · ${I18N.tr('原生交互')}</strong></div>`
+    node.innerHTML = `<div class="fusion-dispatch-head"><strong>${I18N.tr('待处理')} · ${I18N.tr('原生交互')}</strong></div>`
       + `<p class="ovRaw">${esc(OV_AGENT[item.app])} · ${esc(item.goal)}</p>`
       + `<details class="fusion-native-details"><summary>${I18N.tr('交互详情')}</summary>${fusionNativeHtml(run, item)}</details>`;
     node._nativeInteraction = signature;
@@ -448,7 +481,7 @@ function fusionChatRows(items, rows, keepViewport, edge) {
   if (pending.length) {
     fusionPendingGroup ||= document.createElement('section');
     fusionPendingGroup.className = 'fusion-pending-interactions';
-    fusionPendingGroup.setAttribute('aria-label', I18N.tr('需要你处理'));
+    fusionPendingGroup.setAttribute('aria-label', I18N.tr('待处理'));
     syncChildren(fusionPendingGroup, pending); rows.push(fusionPendingGroup);
   }
   const focus = fusionInteractionCards.get(fusionFocusInteraction);
@@ -468,12 +501,12 @@ function fusionNativeHtml(run, attempt) {
     `<button class="${PRIMARY.test(button.label) ? 'primary' : ''}" data-fusion-native="button" data-attempt="${esc(attempt.attemptId)}" data-binding="${esc(attempt.bindingId)}" data-fusion-item="${esc(item.btnItem)}" data-n="${button.n}" data-action-id="${esc(button.actionId)}" data-label="${esc(button.label)}">${esc(button.label)}</button>`)).join('');
   const requests = (attempt.requests || []).map(request => `<div class="fusion-task"><p class="ovRaw">${esc(request.text)}</p>`
     + request.fields.map((field, index) => `<label><span class="ovRaw">${esc(field.label)}</span>${field.options
-      ? `<select data-fusion-field="${index}" data-attempt="${esc(attempt.attemptId)}" data-native-request="${esc(request.id)}">${field.options.map(option => `<option value="${esc(option.value)}" ${field.value === option.value ? 'selected' : ''}>${esc(option.label)}</option>`).join('')}</select>`
+      ? `<select data-fusion-field="${index}" data-attempt="${esc(attempt.attemptId)}" data-native-request="${esc(request.id)}"${field.multiple ? ' multiple' : ''}>${field.options.map(option => `<option value="${esc(option.value)}" ${(field.multiple ? field.value.includes(option.value) : field.value === option.value) ? 'selected' : ''}>${esc(option.label)}</option>`).join('')}</select>`
       : `<input type="${field.type === 'password' ? 'password' : 'text'}" data-fusion-field="${index}" data-attempt="${esc(attempt.attemptId)}" data-native-request="${esc(request.id)}" value="${esc(field.value || '')}">`}</label>`).join('')
     + request.buttons.map((button, index) => `<button class="${PRIMARY.test(button.label) ? 'primary' : ''}" data-fusion-native="codexRequest" data-attempt="${esc(attempt.attemptId)}" data-binding="${esc(attempt.bindingId)}" data-native-request="${esc(request.id)}" data-n="${index}" ${button.disabled ? 'disabled' : ''}>${esc(button.label)}</button>`).join('') + '</div>').join('');
   const questions = attempt.questions;
   const questionKey = esc(JSON.stringify(questions));
-  const questionButton = (label, qi, oi, part, extra = '') => `<button data-fusion-native="question" data-attempt="${esc(attempt.attemptId)}" data-binding="${esc(attempt.bindingId)}" data-qi="${qi}" data-oi="${oi}" data-part="${part}" data-question-key="${questionKey}" ${extra}>${esc(label)}</button>`;
+  const questionButton = (label, qi, oi, part, extra = '') => `<button data-fusion-native="question" data-attempt="${esc(attempt.attemptId)}" data-binding="${esc(attempt.bindingId)}" data-qi="${qi}" data-oi="${oi}" data-part="${part}" data-native-request="${esc(questions.id)}" data-question-key="${questionKey}" ${extra}>${esc(label)}</button>`;
   const questionRows = (questions?.list || []).map((question, qi) => `<div class="fusion-task"><p class="ovRaw">${esc(question.text)}</p>`
     + question.options.map((option, oi) => option.free ? `<input data-fusion-answer="${qi}:${oi}" data-attempt="${esc(attempt.attemptId)}" value="${esc(option.value || '')}">${questionButton(I18N.tr('填入'), qi, oi, 'option')}` : questionButton(option.label, qi, oi, 'option')).join('') + '</div>').join('');
   const questionActions = questions?.list?.length ? questionButton(I18N.tr('跳过'), 0, 0, 'skip')
@@ -486,7 +519,7 @@ function fusionPreserveSheet(paint, surface = null) {
   const dialogue = root.querySelector('[data-fusion-dialogue]');
   const transcript = dialogue?.open ? dialogue.querySelector('.fusion-content') : null;
   const drafts = [...root.querySelectorAll('input, textarea, select')].map(input => ({ name: input.name, attempt: input.dataset.attempt, request: input.dataset.nativeRequest, field: input.dataset.fusionField,
-    answer: input.dataset.fusionAnswer, value: input.value, focused: input === document.activeElement, start: input.selectionStart, end: input.selectionEnd }));
+    answer: input.dataset.fusionAnswer, value: questionFieldValue(input), focused: input === document.activeElement, start: input.selectionStart, end: input.selectionEnd }));
   const detailKey = detail => detail.dataset.fusionAgent ? 'agent:' + detail.dataset.fusionAgent : detail.dataset.fusionAudit || ('fusionRecords' in detail.dataset ? 'records'
     : 'fusionDialogue' in detail.dataset ? 'dialogue' : detail.querySelector('summary').textContent);
   const expanded = new Map([...root.querySelectorAll('details')].map(detail => [detailKey(detail), detail.open]));
@@ -499,7 +532,7 @@ function fusionPreserveSheet(paint, surface = null) {
   for (const input of next.querySelectorAll('input, textarea, select')) {
     const draft = drafts.find(value => value.name === input.name && value.attempt === input.dataset.attempt && value.request === input.dataset.nativeRequest && value.field === input.dataset.fusionField && value.answer === input.dataset.fusionAnswer);
     if (!draft) continue;
-    input.value = draft.value;
+    setQuestionFieldValue(input, draft.value);
     if (draft.focused) { input.focus({ preventScroll: true }); if (draft.start != null && input.setSelectionRange) input.setSelectionRange(draft.start, draft.end); }
   }
   next.scrollTop = scroll;
@@ -554,7 +587,7 @@ function showFusionTask(run, taskId) {
       + `<ol class="fusion-milestones" aria-label="${I18N.tr('任务进度')}">${steps.map(([label, done], index) => `<li class="${done ? 'done' : index === step ? 'current' : ''}">${I18N.tr(label)}</li>`).join('')}</ol>`
       + `<section class="fusion-progress-card"><div class="fusion-progress-heading">${fusionLogo(task.app)}<span>${I18N.tr('进展概括')}</span>${task.updated ? `<time datetime="${new Date(task.updated).toISOString()}">${esc(new Date(task.updated).toLocaleString())}</time>` : ''}</div><p class="ovRaw">${esc(summary.text || fusionTaskStatus(task))}</p>`
       + `<div class="fusion-tags"><span>${I18N.tr('改动文件')} ${summary.files ?? I18N.tr('未提供')}</span><span>${I18N.tr('耗时')} ${summary.durationMs == null ? I18N.tr('未提供') : fusionDuration(summary.durationMs)}</span><span>${I18N.tr('原生回执')} · ${I18N.tr(summary.submission === 'accepted' ? '已接受' : summary.submission === 'not_submitted' ? '未提交' : '待核对')}</span></div>${fusionStateBadge(task)}</section>`
-      + (run.board.nativeInteractions.some(row => row.taskId === task.id) ? `<button class="fusion-pending-link" data-fusion-locate="native:${esc(attempt?.id || '')}">${I18N.tr('需要你处理')} · ${I18N.tr('前往主对话')} ›</button>` : '')
+      + (run.board.nativeInteractions.some(row => row.taskId === task.id) ? `<button class="fusion-pending-link" data-fusion-locate="native:${esc(attempt?.id || '')}">${I18N.tr('待处理')} · ${I18N.tr('前往主对话')} ›</button>` : '')
       + run.board.questions.filter(question => question.taskId === taskId && !question.answeredAt).map(question => fusionInteractionButton('question', question.id)).join('')
       + `<details class="fusion-fold" data-fusion-dialogue data-binding="${esc(attempt?.bindingId || '')}" data-attempt="${esc(attempt?.id || '')}"><summary>${I18N.tr(task.executor === 'main' ? '主 Agent 对话' : '子 Agent 对话')}<small>${I18N.tr('点开后读取')} ›</small></summary><div class="fusion-content"></div></details>`
       + fusionAuditHtml('inputs', { taskId }, I18N.tr('任务输入'))
@@ -620,7 +653,7 @@ document.addEventListener('toggle', event => {
 }, true);
 function receiveFusion(message, link) {
   if (message.t === 'auth') {
-    if (link.authed && ovS.level === 'fusion' && (!ovS.comp || ovS.comp === link.computer.id)) sendFusion(link.computer.id, { t: 'fusionWorkspace' });
+    if (link.authed && ['fusion', 'favorites'].includes(ovS.level) && (!ovS.comp || ovS.comp === link.computer.id)) sendFusion(link.computer.id, { t: 'fusionWorkspace' });
     if (link.authed && fusionViewOwner?.computer === link.computer.id && fusionOwnsView(link.computer.id, fusionViewOwner.runId, { subscriptionId: fusionViewOwner.requestId })) {
       delete fusionViewOwner.dialogueAttempt;
       const { computer, runId, kind, requestId, taskId, workId, questionId } = fusionViewOwner;
@@ -656,11 +689,7 @@ function receiveFusion(message, link) {
     if (sheetKind === 'fusion-create' && fusionNewDraft?.computer === computer)
       fusionPreserveSheet(paintFusionNew, $('sheet'));
   } else if (message.t === 'fusionUpdate') {
-    const workspace = fusionWorkspaces.get(computer);
-    if (workspace) workspace.runs = [message.run, ...workspace.runs.filter(run => run.id !== message.run.id)].sort((a, b) => b.updated - a.updated);
-    if (activeFusionController?.id === message.run.id && activeFusionController.computer === computer) {
-      activeFusionController = message.run; paintFusionRun(); updateTitle();
-    }
+    fusionUpdateWorkspace(computer, message.run);
   } else if (message.t === 'fusionContent') {
     const key = `${computer}|${message.runId}|${message.binding.id}`, previous = fusionContents.get(key), chat = message.chat;
     if (previous && pending?.purpose === 'history') chat.items = [...chat.items, ...previous.items.filter(row => !chat.items.some(item => item.i === row.i))];
@@ -695,11 +724,12 @@ function receiveFusion(message, link) {
     if (message.projectTrust) showProjectTrust(message.projectTrust,
       { computer, app: run.main.app, runId, requestId: crypto.randomUUID() });
   }
-  if (ovS.level === 'fusion') ovRender();
+  if (['fusion', 'favorites'].includes(ovS.level)) ovRender();
   return true;
 }
 
 document.addEventListener('click', event => {
+  if (event.defaultPrevented) return;
   const button = event.target.closest('[data-fusion-fold], [data-fusion-collapse], [data-fusion-relations], [data-fusion-retry], [data-fusion-new], [data-fusion-new-input], [data-fusion-board-tasks], [data-fusion-open], [data-fusion-config], [data-fusion-tasks], [data-fusion-task], [data-fusion-prepare], [data-fusion-trust], [data-fusion-confirm], [data-fusion-stop], [data-fusion-resume], [data-fusion-native], [data-fusion-content], [data-fusion-answer-work], [data-fusion-locate], [data-fusion-option]');
   if (!button || button.disabled) return;
   const surface = button.closest('[data-fusion-run]');
@@ -750,7 +780,7 @@ document.addEventListener('click', event => {
     const action = { kind: button.dataset.fusionNative, bindingId: button.dataset.binding, item: button.dataset.fusionItem,
       actionId: button.dataset.actionId, label: button.dataset.label, n: Number(button.dataset.n), id: button.dataset.nativeRequest };
     const nativeCard = button.closest('[data-fusion-native-card]');
-    if (action.kind === 'codexRequest') action.fields = [...nativeCard.querySelectorAll('[data-fusion-field]')].filter(input => input.dataset.nativeRequest === action.id).map(input => ({ n: Number(input.dataset.fusionField), value: input.value }));
+    if (action.kind === 'codexRequest') action.fields = [...nativeCard.querySelectorAll('[data-fusion-field]')].filter(input => input.dataset.nativeRequest === action.id).map(input => ({ n: Number(input.dataset.fusionField), value: questionFieldValue(input) }));
     if (action.kind === 'question') {
       Object.assign(action, { qi: Number(button.dataset.qi), oi: Number(button.dataset.oi), part: button.dataset.part, questionKey: button.dataset.questionKey });
       const input = [...nativeCard.querySelectorAll('[data-fusion-answer]')].find(input => input.dataset.fusionAnswer === `${action.qi}:${action.oi}`);

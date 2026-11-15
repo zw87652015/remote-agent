@@ -109,8 +109,16 @@ function terminalTheme() {
 }
 new MutationObserver(() => { if (raTerminal) raTerminal.options.theme = terminalTheme(); })
   .observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
-function terminalSelection() { return raTerminal?.getSelection() || ''; }
-function clearTermSelection() { raTerminal?.clearSelection(); }
+function terminalSelection() {
+  const selection = window.getSelection();
+  return $('termText').contains(selection?.anchorNode) && $('termText').contains(selection?.focusNode)
+    ? selection.toString() : raTerminal?.getSelection() || '';
+}
+function clearTermSelection() {
+  const selection = window.getSelection();
+  if ($('termText').contains(selection?.anchorNode)) selection.removeAllRanges();
+  raTerminal?.clearSelection();
+}
 function disposeTerminalView() {
   raTerminal?.dispose(); raTerminal = null;
   $('termText').replaceChildren();
@@ -172,7 +180,7 @@ function resumeTerminal() {
   requestTerminals(true);
 }
 function enterTerminalMode(fromChat) {
-  if (fromChat && terminalOrigin?.source !== 'computer') terminalOrigin = { computer: currentComputer()?.id, source: 'conversation', sel: viewSel };
+  if (fromChat && terminalOrigin?.source !== 'computer') terminalOrigin = { computer: currentComputer()?.id, source: 'conversation' };
   terminalOrigin ||= { computer: currentComputer()?.id, source: 'computer' };
   if (authed) resumeTerminal();
   else { terminalDisconnected(); terminalMessage('正在连接电脑…'); }
@@ -211,7 +219,7 @@ function createRaTerminal() {
   terminalCreateRequest = { requestId: crypto.randomUUID(), computer };
   terminalMessage('正在新建终端…');
   send({ t: 'newTerminal', requestId: terminalCreateRequest.requestId, source: origin.source,
-    ...(origin.source === 'conversation' ? { sel: origin.sel } : {}) });
+    ...(origin.source === 'conversation' ? { sel: viewSel } : {}) });
 }
 function removeRaTerminal(id) {
   send({ t: 'closeTerminal', id, requestId: crypto.randomUUID() });
@@ -229,6 +237,8 @@ function renderTerminalSnapshot(m) {
     fontFamily: 'ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace', fontSize: 13,
     cursorBlink: false, theme: terminalTheme(), allowProposedApi: true, disableStdin: true });
   terminal.open($('termText'));
+  const rows = $('termText').querySelector('.xterm-rows');
+  for (const type of ['mousedown', 'contextmenu']) rows.addEventListener(type, event => event.stopPropagation());
   terminal.textarea.readOnly = true;
   terminal.textarea.tabIndex = -1;
   const subscription = terminalSubscription;

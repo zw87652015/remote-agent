@@ -11,6 +11,11 @@ function finishModelPick(m) {
     $('sheet').querySelectorAll('[data-fast]').forEach(button => { button.disabled = false; button.removeAttribute('aria-busy'); button.querySelector('[data-fast-pending]')?.remove(); });
     return;
   }
+  if (m.kind === 'permission' && currentApp === 'opencode') {
+    menuCache.delete(menuCacheKey('permission'));
+    if (m.ok) status(`已切换到 ${m.label}`);
+    return;
+  }
   menuCache.delete(menuCacheKey('model')); menuCache.delete(menuCacheKey('effort'));
   if (m.ok) status(`已切换到 ${m.label}`);
 }
@@ -44,7 +49,7 @@ function interruptSessionBatch() {
   status('批量操作已中断，请刷新列表确认已完成结果', false);
 }
 function showProjectWindows(m) {
-  openSheet('project-windows', `<h3>项目窗口</h3><button class="opt" data-window-enabled="${m.enabled ? '0' : '1'}"><span class="lbl">自动关闭空闲窗口</span><span class="switch${m.enabled ? ' on' : ''}"></span></button><label class="pSec">空闲分钟数<input data-window-idle type="number" min="1" value="${m.idleMinutes}"></label>${m.windows.map(w => `<div class="pSec">${esc(({cursor:'Cursor',devin:'Devin',codex:'Codex'})[w.app] + ' · ' + w.title)}</div><div class="hint">${esc(w.root)}<br>${esc(w.reason || (w.owned ? '已纳入自动管理' : '未纳入自动管理'))}</div><button class="opt" data-window-key="${esc(w.key)}" data-window-owned="${w.owned ? '0' : '1'}">${w.owned ? '退出自动管理' : '纳入自动管理'}</button><button class="opt" data-window-key="${esc(w.key)}" data-window-keep="${w.keep ? '0' : '1'}">${w.keep ? '取消保留' : '始终保留此窗口'}</button>`).join('')}`);
+  openSheet('project-windows', `<h3>项目窗口</h3>${m.reason ? `<p class="hint">${esc(m.reason)}</p>` : ''}<button class="opt" ${m.supported === false ? 'disabled' : ''} data-window-enabled="${m.enabled ? '0' : '1'}"><span class="lbl">自动关闭空闲窗口</span><span class="switch${m.enabled ? ' on' : ''}"></span></button><label class="pSec">空闲分钟数<input ${m.supported === false ? 'disabled' : ''} data-window-idle type="number" min="1" value="${m.idleMinutes}"></label>${m.windows.map(w => `<div class="pSec">${esc(({cursor:'Cursor',devin:'Devin',codex:'Codex'})[w.app] + ' · ' + w.title)}</div><div class="hint">${esc(w.root)}<br>${esc(w.reason || (w.owned ? '已纳入自动管理' : '未纳入自动管理'))}</div><button class="opt" ${m.supported === false ? 'disabled' : ''} data-window-key="${esc(w.key)}" data-window-owned="${w.owned ? '0' : '1'}">${w.owned ? '退出自动管理' : '纳入自动管理'}</button><button class="opt" ${m.supported === false ? 'disabled' : ''} data-window-key="${esc(w.key)}" data-window-keep="${w.keep ? '0' : '1'}">${w.keep ? '取消保留' : '始终保留此窗口'}</button>`).join('')}`);
   $('sheet').querySelector('[data-window-idle]').onchange = e => send({ t: 'projectWindowSet', change: { idleMinutes: Number(e.target.value) } });
 }
 const agentOpenedKey = thread => `${currentComputer()?.id || ''}|${currentAppName}|${thread}`;
@@ -61,13 +66,8 @@ function setAgentFilter(value) {
   store.set('agent-filters', JSON.stringify(agentFilters));
 }
 function agentThreadKey(a, app = currentApp) {
-  const id = String(a.id || '');
   if (a.threadId) return a.threadId;
-  if (app === 'codex' && id.startsWith('thread:')) return id.split(':').slice(2).join(':');
-  if (id.startsWith('project:')) {
-    try { return decodeURIComponent(id.split(':').slice(2).join(':')).replace(/^tab:/, ''); } catch {}
-  }
-  return app === 'devin' ? id.replace(/^tab:/, '') : id;
+  return RemoteAgentRules.parseSessionRef(app, a.id);
 }
 function legacyAgentLibrary() {
   const entries = new Map();
@@ -77,11 +77,8 @@ function legacyAgentLibrary() {
     if (!prefix) continue;
     const [appName, ...parts] = key.slice(prefix.length).split('|');
     const app = appName.toLowerCase();
-    let id = parts.join('|');
-    if (id.startsWith('project:')) id = decodeURIComponent(id.split(':').slice(2).join(':'));
-    if (app === 'codex' && id.startsWith('thread:')) id = id.split(':').slice(2).join(':');
-    if (app === 'devin') id = id.replace(/^tab:/, '');
-    if (!['cursor', 'devin', 'codex'].includes(app) || !id || /^(?:pick|new|win|window|project-new):/.test(id)) continue;
+    const id = RemoteAgentRules.parseSessionRef(app, parts.join('|'));
+    if (!['cursor', 'devin', 'codex', 'opencode'].includes(app) || !id || /^(?:pick|new|win|window|project-new):/.test(id)) continue;
     const entry = entries.get(app + '|' + id) || { app, id };
     if (agentFavorites[key]) entry.favorite = true;
     entry.lastMessageAt = Math.max(entry.lastMessageAt || 0, Number(agentUsage[key]?.lastMessageAt) || 0);
@@ -100,7 +97,7 @@ function agentSessionAvailable(row, app = currentApp) {
 function receiveSessionLibrary(message) {
   if (message.computer !== currentComputer()?.id) return;
   sharedAgentLibrary = message;
-  for (const app of ['cursor', 'devin', 'codex']) {
+  for (const app of ['cursor', 'devin', 'codex', 'opencode']) {
     const prefix = currentComputer().key + ':' + app;
     for (const [key, list] of [...agentLists]) {
       if (key !== prefix && !key.startsWith(prefix + ':')) continue;
@@ -242,11 +239,11 @@ function codexAutoRetryCount() {
   return Number.isInteger(n) && n >= 1 && n <= 5 ? n : 1;
 }
 function showCodexRetryMenu() {
-  const enabled = codexAutoRetryEnabled(), count = codexAutoRetryCount();
+  const enabled = codexAutoRetryEnabled(), count = codexAutoRetryCount(), backend = currentComputer()?.windowId === 'backend';
   openSheet('codex-retry', `<h3>Codex 自动重试</h3>`
-    + `<button class="opt" data-act="codexRetryToggle" role="switch" aria-checked="${enabled}"><span class="lbl">自动点击 Retry<span class="sub">模型容量不足时自动点击电脑端 Retry</span></span><span class="switch${enabled ? ' on' : ''}" aria-hidden="true"></span></button>`
-    + `<label class="opt"><span class="lbl">每次最多点击次数<span class="sub">只限制同一条容量提示的自动点击次数</span></span><input id="codexRetryCount" type="number" min="1" max="5" step="1" value="${count}" ${enabled ? '' : 'disabled'}></label>`
-    + '<p class="hint">默认关闭；达到次数后保留 Retry 按钮，由你手动决定是否继续。</p><button class="opt" data-act="codexRetryBack">← 返回菜单</button>');
+    + `<button class="opt" data-act="codexRetryToggle" role="switch" aria-checked="${enabled}"><span class="lbl">${backend ? '自动重试' : '自动点击 Retry'}<span class="sub">${backend ? '模型容量不足且原生重试结束后，继续当前会话' : '模型容量不足时自动点击电脑端 Retry'}</span></span><span class="switch${enabled ? ' on' : ''}" aria-hidden="true"></span></button>`
+    + `<label class="opt"><span class="lbl">${backend ? '每次最多重试次数' : '每次最多点击次数'}<span class="sub">${backend ? '限制连续容量错误的自动重试次数；离开对话页后停止' : '只限制同一条容量提示的自动点击次数'}</span></span><input id="codexRetryCount" type="number" min="1" max="5" step="1" value="${count}" ${enabled ? '' : 'disabled'}></label>`
+    + `<p class="hint">默认关闭；达到次数后保留${backend ? '手动重试' : ' Retry '}按钮，由你决定是否继续。</p><button class="opt" data-act="codexRetryBack">← 返回菜单</button>`);
   $('codexRetryCount').onchange = () => {
     const n = Math.max(1, Math.min(5, Math.round(Number($('codexRetryCount').value) || 1)));
     store.set('codex-auto-retry-count', String(n));
@@ -288,22 +285,17 @@ const KIND_TAG = { agents: 'Agents', ssh: 'SSH', local: '本地' };
 
 // Cursor titles look like "file.py — Folder [SSH: host]"; the window is identified by folder (+ host), not the open file.
 function cleanWindowTitle(title) {
-  return String(title || '').replace(/\s*\[(?:Administrator|Administer)\]/gi, '').trim();
+  return RemoteAgentRules.cleanWindowTitle(title);
 }
 function winLabel(title) {
-  title = cleanWindowTitle(title);
-  const windowsTitle = /\s+-\s+(?:Cursor|Devin|Visual Studio Code)$/.test(title);
-  title = title.replace(/\s+-\s+(?:Cursor|Devin|Visual Studio Code)$/, '');
-  const host = /\[SSH: ([^\]]+)\]/.exec(title)?.[1];
-  const parts = title.replace(/\s*\[SSH: [^\]]+\]\s*$/, '').split(windowsTitle ? / — | - / : ' — ').map(s => s.replace(/^●\s*/, '').trim());
-  const folder = parts.pop() || title;
-  return { name: host ? `${folder} · ${host}` : folder, file: parts.join(' — ') };
+  const { name, file, host } = RemoteAgentRules.parseWindowTitle(title);
+  return { name: host ? `${name} · ${host}` : name, file };
 }
 
 function windowEntries() {
   const saved = currentComputer()?.selections || {};
   const available = new Set(windows.flatMap(w => w.windowIds || [w.id]));
-  const entries = windows.filter(w => ['cursor', 'devin', 'codex'].includes(w.app)).map(w => {
+  const entries = windows.filter(w => ['cursor', 'devin', 'codex', 'opencode'].includes(w.app)).map(w => {
     const selected = saved[w.app]?.id;
     return { ...w, id: selected && available.has(selected) ? selected : w.id };
   });
@@ -330,7 +322,7 @@ function showWindows() {
   if (sheetKind === 'windows' && $('sheet')._winSig === sig) return measureLatency(entries.map(w => w.id));
   $('sheet')._winSig = sig;
   const rows = entries.map(w => {
-    const software = { cursor: 'Cursor', devin: 'Devin', codex: 'Codex', fusion: 'Fusion' }[w.app] || w.app;
+    const software = { cursor: 'Cursor', devin: 'Devin', codex: 'Codex', fusion: 'Fusion', opencode: 'OpenCode' }[w.app] || w.app;
     const plan = appPlans[w.app] ? `<span class="winPlan">${esc(appPlans[w.app])}</span>` : '';
     return `<button class="opt ${w.app === currentApp ? 'cur' : ''}" data-win="${esc(w.id)}"><span class="optLogo" data-logo="${esc(w.app)}"></span><span class="lbl">${esc(software)}${plan}</span><span data-latency="${esc(w.id)}">${latencyMarkup(w.id)}</span></button>`;
   }).join('');
@@ -358,7 +350,7 @@ function paintRail() {
   const railOn = document.body.matches('.split');
   if (rail._sig === sig) { if (railOn) measureLatency(entries.map(w => w.id)); return; }
   rail._sig = sig;
-  const names = { cursor: 'Cursor', devin: 'Devin', codex: 'Codex', fusion: 'Fusion' };
+  const names = { cursor: 'Cursor', devin: 'Devin', codex: 'Codex', fusion: 'Fusion', opencode: 'OpenCode' };
   const agentRows = entries.map(w => {
     const plan = appPlans[w.app] ? `<span class="tag">${esc(appPlans[w.app])}</span>` : '';
     const label = names[w.app] || w.app;
@@ -469,26 +461,28 @@ function showComputerActions(id, app = '') {
   const link = computerSockets.get(entry.c.key);
   const catalog = link.metadata.get('agentCatalog')?.agents || [];
   app ||= list.find(w => w.windowId === entry.c.windowId)?.app || list[0]?.app || 'cursor';
-  const names = { cursor: 'Cursor', devin: 'Devin', codex: 'Codex' };
+  const names = { cursor: 'Cursor', devin: 'Devin', codex: 'Codex', opencode: 'OpenCode' };
   const attr = `data-computer-id="${esc(id)}"`;
   const tabs = Object.entries(names).map(([key, name]) => `<button type="button" class="paramBtn${key === app ? ' cur' : ''}" data-computer-app="${key}" ${attr} aria-pressed="${key === app}">${name}</button>`).join('');
   const projects = list.filter(w => w.app === app);
   const targetAttr = w => `data-computer-target="${esc(JSON.stringify({ computer: id, win: w.win, windowId: w.windowId }))}"`;
   const selected = projects.find(w => w.windowId === entry.c.windowId) || projects[0];
+  const service = app === 'opencode' && link.metadata.get('windows')?.list.find(w => w.app === 'opencode');
+  const target = app === 'opencode' ? (service ? { win: service.id, windowId: selected?.windowId || '' } : null) : selected;
   const agent = catalog.find(a => a.app === app);
   const missing = `<p class="hint">${esc(I18N.tr(agent?.reason || '请先打开此 Agent'))}</p>${agent?.installed === true && !agent.running && agent.launchSupported ? `<button class="opt" data-computer-launch="${app}" ${attr}>${I18N.tr('启动')} ${names[app]}</button>` : ''}`;
-  openSheet('computer-actions', `<h3>${I18N.tr('项目与会话')}</h3><p class="hint">${esc(entry.name)}</p><div class="pSec">${I18N.tr('选择 Agent')}</div><div class="computerAgentTabs">${tabs}</div>${selected ? `<button class="opt" data-computer-action ${targetAttr(selected)}>${I18N.tr('项目与会话')}</button>` : missing}`);
+  openSheet('computer-actions', `<h3>${I18N.tr('项目与会话')}</h3><p class="hint">${esc(entry.name)}</p><div class="pSec">${I18N.tr('选择 Agent')}</div><div class="computerAgentTabs">${tabs}</div>${target ? `<button class="opt" data-computer-action ${targetAttr(target)}>${I18N.tr('项目与会话')}</button>` : missing}`);
 }
 function showComputerFiles() {
   const state = computerFiles, dir = state.directory;
   const field = document.activeElement?.id === 'computerFilePath' ? document.activeElement : null;
   const selection = field && [field.selectionStart, field.selectionEnd];
-  const entries = state.roots ? state.roots.map(p => ({ name: p.name, path: p.path, directory: true, selectable: true })) : dir?.entries || [];
-  const rows = entries.filter(e => !state.project || e.directory).map(e => `<button class="opt editorEntry${e.directory ? ' editorFolder' : ''}" data-computer-path="${esc(e.path)}" data-computer-directory="${!!e.directory}" ${e.selectable ? '' : 'disabled'}>${fileEntryIcon(e.directory)}<span class="lbl ovRaw">${esc(e.name)}</span>${e.directory ? '<span class="editorEntryArrow" aria-hidden="true">›</span>' : `<span class="sub">${e.selectable ? fmtSize(e.size) : I18N.tr('不可读取')}</span>`}</button>`).join('');
+  const entries = state.message || state.error ? [] : state.roots ? state.roots.map(p => ({ name: p.name, path: p.path, directory: true, selectable: true })) : dir?.entries || [];
+  const rows = computerFileEntries(state, entries).map(e => `<button class="opt editorEntry${e.directory ? ' editorFolder' : ''}" data-computer-path="${esc(e.path)}" data-computer-directory="${!!e.directory}" ${e.selectable ? '' : 'disabled'}>${fileEntryIcon(e.directory)}<span class="lbl ovRaw">${esc(e.name)}</span>${e.directory ? '<span class="editorEntryArrow" aria-hidden="true">›</span>' : `<span class="sub">${e.selectable ? fmtSize(e.size) : state.project ? I18N.tr('仅可选择文件夹') : I18N.tr('不可读取')}</span>`}</button>`).join('');
   const owner = state.project?.owner;
   const context = owner ? ` · Fusion · ${OV_AGENT[owner.app]}` : '';
-  const actions = state.project && dir ? '<div class="computerFileActions"><button class="opt" data-computer-project="open">打开此文件夹</button><button class="opt" data-computer-project="chat">在此项目新建会话</button><button class="opt" data-computer-project="new">新建项目并创建会话</button></div>' : '';
-  openSheet('computer-files', `<h3>${I18N.tr(state.project ? '选择文件夹' : '打开文件')}</h3><p class="hint ovRaw">${esc(state.computer.name + context)}</p><form id="computerFilePathForm" class="computerFilePath"><input id="computerFilePath" class="ovRaw" aria-label="${I18N.tr('文件路径')}" placeholder="${I18N.tr('输入路径')}" value="${esc(state.path)}" autocomplete="off" autocapitalize="off" spellcheck="false"><button type="button" data-computer-complete title="Tab">${I18N.tr('补全')} ⇥</button><button type="submit">${I18N.tr('前往')}</button></form><div id="computerFileCompletions"></div><div class="computerFileNav"><button type="button" data-computer-path="${esc(dir?.parent ?? '')}" data-computer-directory="true" ${dir?.parent == null ? 'disabled' : ''}>${I18N.tr('返回上一级')}</button><button type="button" data-computer-root>${I18N.tr('根目录')}</button></div>${actions}<p id="computerFileStatus" class="hint${state.error ? ' err' : ''}" role="status">${esc(I18N.tr(state.message))}</p>${rows || (!state.message ? `<div class="hint">${I18N.tr('此目录暂无可显示的文件')}</div>` : '')}`);
+  const actions = state.project && dir && !state.message && !state.error && state.path === dir.path ? '<div class="computerFileActions"><button class="opt" data-computer-project="open">打开此文件夹</button><button class="opt" data-computer-project="chat">在此项目新建会话</button><button class="opt" data-computer-project="new">新建项目并创建会话</button></div>' : '';
+  openSheet('computer-files', `<h3>${I18N.tr(state.project ? '选择文件夹' : '打开文件')}</h3><p class="hint ovRaw">${esc(state.computer.name + context)}</p><form id="computerFilePathForm" class="computerFilePath"><input id="computerFilePath" class="ovRaw" aria-label="${I18N.tr('文件路径')}" placeholder="${I18N.tr('输入路径')}" value="${esc(state.path)}" autocomplete="off" autocapitalize="off" spellcheck="false"><button type="button" data-computer-complete title="Tab">${I18N.tr('补全')} ⇥</button><button type="submit">${I18N.tr('前往')}</button></form><div id="computerFileCompletions"></div><div class="computerFileNav"><button type="button" data-computer-path="${esc(dir?.parent ?? '')}" data-computer-directory="true" ${dir?.parent == null ? 'disabled' : ''}>${I18N.tr('返回上一级')}</button><button type="button" data-computer-root>${I18N.tr('根目录')}</button></div><label class="opt computerFileHidden"><span class="lbl">${I18N.tr('不显示隐藏文件和文件夹')}</span><input id="computerFileHideHidden" type="checkbox" role="switch"${state.hideHidden ? ' checked' : ''}><span class="switch${state.hideHidden ? ' on' : ''}" aria-hidden="true"></span></label>${actions}<p id="computerFileStatus" class="hint${state.error ? ' err' : ''}" role="status">${esc(I18N.tr(state.message))}</p>${rows || (!state.message ? `<div class="hint">${I18N.tr('此目录暂无可显示的文件')}</div>` : '')}`);
   $('sheet').scrollTop = state.scroll;
   if (selection) { $('computerFilePath').focus(); $('computerFilePath').setSelectionRange(...selection); }
   else if (state.focusPath) { $('computerFilePath').focus(); state.focusPath = false; }
@@ -536,17 +530,19 @@ function showAgentActions(id, title, actions = null, target = null) {
   const current = !target && (agentLists.get(agentListKey()) || []).find(a => a.id === id);
   const codexThread = (target ? target.app === 'codex' : currentAppName === 'Codex') && String(id).startsWith('thread:');
   const favorite = target ? target.favorite : agentFavoriteState(id);
+  const fusion = target?.fusion;
   const disabled = target?.off ? ' disabled' : '';
   const nativeDisabled = target?.off || target?.dormant ? ' disabled' : '';
   const rows = [
-    current?.current ? '' : `<button class="opt" data-agent-action="open" data-agent-action-id="${esc(id)}" data-agent-action-title="${esc(title)}"${target?.dormant && !target.workspace ? ' disabled' : ''}><span class="lbl">打开会话</span></button>`,
-    target?.state === 'done' ? '<button class="opt" data-agent-action="read"><span class="lbl">已读</span></button>' : '',
+    current?.current ? '' : `<button class="opt" data-agent-action="open" data-agent-action-id="${esc(id)}" data-agent-action-title="${esc(title)}"${target?.dormant && !target.workspace ? ' disabled' : ''}><span class="lbl">${fusion ? I18N.tr('打开主对话') : '打开会话'}</span></button>`,
+    (fusion ? target.resultKey && ['done', 'err'].includes(target.state) : target?.state === 'done') ? '<button class="opt" data-agent-action="read"><span class="lbl">已读</span></button>' : '',
     `<button class="opt" data-agent-action="favorite" data-agent-action-id="${esc(id)}"${disabled}><span class="lbl">${target ? favorite ? '取消收藏' : '收藏' : favorite ? '取消常用' : '设置为常用'}</span></button>`,
     codexThread ? `<button class="opt" data-agent-action="copyLink" disabled aria-busy="${!target?.off}"><span class="lbl">复制会话链接</span></button>` : '',
-    ...(actions || (codexThread ? ['rename', 'archive'] : [])).map(action => `<button class="opt" data-agent-action="${action}" data-agent-action-id="${esc(id)}" data-agent-action-title="${esc(title)}"${nativeDisabled}><span class="lbl">${action === 'rename' ? '重命名' : action === 'delete' ? '删除' : codexThread ? '删除／归档' : '归档'}</span></button>`),
+    ...(actions || (codexThread ? ['rename', 'archive'] : [])).map(action => `<button class="opt" data-agent-action="${action}" data-agent-action-id="${esc(id)}" data-agent-action-title="${esc(title)}"${nativeDisabled}><span class="lbl">${fusion ? I18N.tr(({ tasks: '查看任务', config: '工作台设置', rename: '重命名', stop: '停止工作台', remove: '删除工作台' })[action]) : action === 'rename' ? '重命名' : action === 'delete' ? '删除' : codexThread ? '删除／归档' : '归档'}</span></button>`),
     target?.off ? '<div class="hint">电脑离线，连接后可管理会话</div>' : target?.dormant ? '<div class="hint">项目窗口已关闭，打开对话后可重命名或归档／删除</div>' : actions === null && !codexThread ? '<div class="hint">正在读取会话操作…</div>' : '',
   ].filter(Boolean).join('');
-  const owner = target ? `<div class="hint">${esc(ovCompName(target.comp))} · ${esc(target.projName)} · ${esc(ovAgName(target))}</div>` : '';
+  const owner = (target ? `<div class="hint">${esc(ovCompName(target.comp))} · ${esc(target.projName)} · ${esc(ovAgName(target))}</div>` : '')
+    + (fusion && target.removal ? `<div class="hint">${I18N.tr('原生会话清理')} ${target.removal.done}/${target.removal.total}${target.removal.error ? `<br>${esc(target.removal.target.app)} · ${esc(target.removal.target.label || I18N.tr('主 Agent'))}：${esc(I18N.tr(target.removal.error))}` : ''}</div>` : '');
   openSheet('agent-actions', `<h3>${esc(title)}</h3>${owner}${rows || '<div class="hint">没有可用操作。</div>'}`);
   if (codexThread && !target?.off) {
     const requestId = ++agentActionRequest;
@@ -752,7 +748,7 @@ function requestMenu(kind, loadingMsg) {
   clearTimeout(menuRefreshTimer);
   if (kind === 'model' || kind === 'effort') {
     const state = capabilityState(kind);
-    if (!state.available) return status(state.reason, false);
+    if (!state.available) return showMenuError(kind, state.reason);
   }
   const cached = menuCache.get(menuCacheKey(kind));
   if (cached) {
@@ -767,6 +763,7 @@ function requestMenu(kind, loadingMsg) {
   }
 }
 function showMenuError(kind, message) {
+  menuPending = null;
   menuSheetKind = kind;
   openSheet('menu', `<h3>${MENU_TITLE[kind] || ''}</h3><p class="hint" role="alert">${esc(I18N.tr(message))}</p>`);
   status(message, false);
@@ -900,12 +897,7 @@ function deviceGroups() {
 function drawEntryQr(modules) {
   const canvas = $('entryInviteQr');
   if (!canvas || !Array.isArray(modules) || !modules.length) return;
-  const size = modules.length + 8, scale = 4;
-  canvas.width = canvas.height = size * scale;
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = '#000';
-  modules.forEach((row, y) => row.forEach((dark, x) => { if (dark) ctx.fillRect((x + 4) * scale, (y + 4) * scale, scale, scale); }));
+  drawQrModules(canvas, modules);
 }
 function renderDevices() {
   const when = t => new Date(t).toLocaleDateString();
@@ -1048,7 +1040,7 @@ function meterFill(pct, basis) {
   const warm = basis === 'remaining' ? pct <= 25 : pct >= 75;
   return tight ? 'hot' : warm ? 'warm' : '';
 }
-const meterPercent = pct => pct == null ? null : Math.max(0, Math.min(100, Number(pct)));
+const meterPercent = pct => pct == null ? null : Math.round(Math.max(0, Math.min(100, Number(pct))));
 const contextMeterScope = () => [currentComputer()?.id || '', viewSel].join('|');
 let contextInfo = null, quotaInfo = null;
 let contextMeterOwner = '', quotaMeterOwner = '';
@@ -1057,6 +1049,7 @@ function quotaMeterData(m) {
     .map(b => ({ ...b, pct: meterPercent(b.pct), basis: b.basis || 'used' }));
 }
 function currentUsageMeters() {
+  if (!windowReady) return { context: null, quota: [] };
   return { context: contextMeterOwner === contextMeterScope() ? contextInfo : null,
     quota: quotaMeterOwner === quotaKey() && !quotaInfo.missing ? quotaMeterData(quotaInfo) : [] };
 }
@@ -1064,18 +1057,94 @@ function renderContext(info) {
   const basis = info && typeof info === 'object' ? (info.basis || 'used') : 'used';
   const pct = info == null ? null : typeof info === 'object' ? info.pct : info;
   const n = meterPercent(pct === '' ? null : pct);
-  contextInfo = { pct: n, basis };
+  contextInfo = info?.source === 'opencode' ? { ...info, pct: n, basis } : { pct: n, basis };
   contextMeterOwner = contextMeterScope();
-  $('meterCtxPct').textContent = n == null ? '未获取' : (basis === 'remaining' ? '剩余' : '已用') + n + '%';
+  const local = info?.source === 'opencode';
+  const capacity = local && info.limit ? (info.limit % 1024 === 0 ? info.limit / 1024 + 'K' : info.limit) : '';
+  $('meterCtxPct').textContent = n == null ? (local ? '尚未统计' + (capacity ? ' / ' + capacity : '') : '未获取') : (basis === 'remaining' ? '剩余' : '已用') + n + '%';
   const fill = $('meterCtxFill');
   fill.style.width = (n ?? 0) + '%';
   fill.parentElement.style.setProperty('--pct', n ?? 0);
   fill.parentElement.dataset.n = n == null ? '' : Math.round(n);
   fill.className = meterFill(n, basis);
-  $('meterCtx').title = '上下文 · ' + (basis === 'remaining' ? '剩余' : '已用') + ' ' + (n ?? '–') + '%';
+  $('meterCtx').title = local ? '上下文 · ' + (info.updated ? '上次调用 · ' : '') + $('meterCtxPct').textContent
+    : '上下文 · ' + (basis === 'remaining' ? '剩余' : '已用') + ' ' + (n ?? '–') + '%';
   $('meterCtx').setAttribute('aria-label', $('meterCtx').title);
   $('meterCtx').onclick = () => showUsageDetails('context');
+  renderPerfChip(lastChat?.performance);
   document.dispatchEvent(new Event('usage-state'));
+}
+/* ---------- native performance (footer) ---------- */
+let _perfOpen = false, perfSample = null;
+const PERF_WINDOW_MS = 3000;
+function fmtTokPerSec(tokS) {
+  if (tokS == null) return '—';
+  return tokS >= 1000 ? (tokS / 1000).toFixed(1).replace(/\.?0$/, '') + ' kt/s' : Math.round(tokS) + ' tok/s';
+}
+function fmtDuration(ms) {
+  if (ms == null) return '—';
+  const s = ms / 1000;
+  if (s < 0.06) return Math.round(ms) + 'ms';
+  if (s < 60) return Math.round(s) + 's';
+  return Math.floor(s / 60) + 'm' + Math.round(s % 60) + 's';
+}
+function fmtTok(n) {
+  if (n == null) return '—';
+  return n >= 1000 ? (n / 1000).toFixed(1).replace(/\.?0$/, '') + 'k' : String(n);
+}
+function buildPerfPanel(panel, info) {
+  const row = (label, val) => '<div class="perf-row"><span class="perf-key">' + label + '</span><span class="perf-val">' + esc(val) + '</span></div>';
+  const tokens = info.tokens;
+  const token = value => value == null ? info.busy ? '待返回' : '—' : fmtTok(value);
+  panel.innerHTML = row(info.label, info.speed) + (info.interval ? row('统计区间', fmtDuration(info.intervalMs)) : '')
+    + row('耗时', fmtDuration(info.durationMs))
+    + row('输入 token', token(tokens?.input)) + row('输出 token', token(tokens?.output))
+    + row('推理 token', token(tokens?.reasoning)) + row('缓存读取 token', token(tokens?.cacheRead)) + row('缓存写入 token', token(tokens?.cacheWrite))
+    + row('缓存命中率', info.cacheRate == null ? info.busy ? '待返回' : '—' : info.cacheRate + '%')
+    + row('模型', info.model || '—');
+}
+function renderPerfChip(info) {
+  const chip = $('perfChip'), panel = $('perfPanel');
+  if (!info) { _perfOpen = false; perfSample = null; chip.hidden = true; panel.hidden = true; return; }
+  const key = JSON.stringify([contextMeterScope(), info.source, info.runId, info.usageId, info.model, info.unit]);
+  const now = performance.now(), counter = info.counter ?? null;
+  const codexInterval = info.source === 'codex' && info.unit === 'tokens';
+  if (perfSample?.key !== key) {
+    _perfOpen = false;
+    perfSample = { key, counter, baseline: counter, at: now, rate: null, intervalMs: null };
+  } else if (counter == null || perfSample.counter == null || counter < perfSample.counter) {
+    Object.assign(perfSample, { counter, baseline: counter, at: now, rate: null, intervalMs: null });
+  } else if (codexInterval) {
+    if (counter !== perfSample.counter) {
+      const elapsed = now - perfSample.at;
+      perfSample.rate = elapsed > 0 ? (counter - perfSample.counter) / (elapsed / 1000) : null;
+      perfSample.intervalMs = elapsed > 0 ? elapsed : null;
+      perfSample.counter = counter;
+      perfSample.at = now;
+    }
+  } else {
+    perfSample.counter = counter;
+    const windows = Math.floor((now - perfSample.at) / PERF_WINDOW_MS);
+    if (windows && info.busy) {
+      const difference = perfSample.counter - perfSample.baseline;
+      perfSample.rate = windows === 1 && difference > 0 ? difference / (PERF_WINDOW_MS / 1000) : null;
+      perfSample.at += windows * PERF_WINDOW_MS;
+      perfSample.baseline = perfSample.counter;
+    }
+  }
+  const interval = info.unit === 'tokens' && (info.source === 'codex' || info.rate == null);
+  const rate = interval ? perfSample.rate : info.rate;
+  const label = info.unit === 'characters' ? '实时字符速度' : codexInterval ? '更新区间平均速度' : interval ? '3 秒估算速度'
+    : info.source === 'opencode' ? '本次平均' : '轮次平均';
+  const speed = rate == null ? info.busy ? codexInterval ? '待更新' : '统计中' : '—' : info.unit === 'characters' ? Math.round(rate) + ' 字符/秒' : fmtTokPerSec(rate);
+  const startedAt = info.startedAt || lastChat?.generation?.start;
+  const durationMs = info.busy && startedAt ? Math.max(0, Date.now() - startedAt) : info.durationMs;
+  chip.textContent = speed;
+  chip.title = label;
+  chip.setAttribute('aria-label', label + ' · ' + speed);
+  chip.hidden = false;
+  buildPerfPanel(panel, { ...info, label, speed, interval, intervalMs: codexInterval ? perfSample.intervalMs : PERF_WINDOW_MS, durationMs });
+  panel.hidden = !_perfOpen;
 }
 // Phones show the value text ("已用 56%") beside each ring whenever every meter fits that way next to
 // a readable title; otherwise the number moves inside the ring. Measured, so fonts/languages don't matter.
@@ -1096,9 +1165,15 @@ for (const id of ['meters', 'title']) new MutationObserver(queueFitMeters).obser
 window.addEventListener('resize', queueFitMeters);
 const quotaCache = new Map();
 const quotaKey = () => [currentComputer()?.id || '', ...viewSel.split('|').slice(0, 2)].join('|');
+document.addEventListener('composer-state', () => {
+  if (windowReady) return;
+  renderContext(null);
+  renderQuota({ missing: true, quota: [], limits: [] });
+});
 function renderQuota(m) {
   if ('context' in m) renderContext(m.context);
-  if (m.error) { $('quotaStatus').textContent = m.error; $('quotaStatus').title = $('quotaMeters').title = m.detail || m.error; if (!m.automatic) status('额度刷新失败：' + m.error, false); return; }
+  if (m.context?.source === 'opencode' && !m.automatic) finishPending(['正在读取上下文…']);
+  if (m.error) { renderQuota({ missing: true, quota: [], limits: [] }); $('quotaStatus').textContent = m.error; $('quotaStatus').title = $('quotaMeters').title = m.detail || m.error; if (!m.automatic) status('额度刷新失败：' + m.error, false); return; }
   if (!m.cached || m.updated > (quotaCache.get(quotaKey())?.updated || 0)) $('quotaStatus').textContent = '';
   if (m.refreshError) { $('quotaStatus').textContent = '刷新失败，显示桌面缓存'; $('quotaStatus').title = m.refreshError; }
 
@@ -1113,14 +1188,8 @@ function renderQuota(m) {
   document.dispatchEvent(new Event('usage-state'));
   $('quotaMeters').classList.toggle('devinLimits', currentApp === 'devin' && bars.length > 1);
   const when = m.updated ? new Date(m.updated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
-  if (m.missing) {
-    $('quotaMeters').title = '没有额度数据' + (when ? ` · 更新于 ${when}` : '');
-    $('quotaMeters').innerHTML = `<button class="meter" type="button"><span class="track"></span><span class="meterText"><span class="meterLabel">额度</span><b>未获取</b></span></button>`;
-    $('quotaMeters').querySelector('button').onclick = () => showUsageDetails('quota');
-    return;
-  }
-  if (!bars.length) {
-    $('quotaMeters').title = '没有额度指标' + (when ? ` · 更新于 ${when}` : '');
+  if (m.missing || !bars.length) {
+    $('quotaMeters').title = (m.missing ? '没有额度数据' : '没有额度指标') + (when ? ` · 更新于 ${when}` : '');
     $('quotaMeters').innerHTML = `<button class="meter" type="button"><span class="track"></span><span class="meterText"><span class="meterLabel">额度</span><b>未获取</b></span></button>`;
     $('quotaMeters').querySelector('button').onclick = () => showUsageDetails('quota');
     return;
@@ -1139,21 +1208,35 @@ function renderQuota(m) {
 }
 function showUsageDetails(kind) {
   const context = kind === 'context';
+  const local = context && contextInfo?.source === 'opencode';
   const m = quotaInfo || {};
   const bars = fusionUsageBars(m);
   const value = b => b?.pct == null ? String(b?.value || '未获取') : `${b.basis === 'remaining' ? '剩余' : '已用'} ${b.pct}%`;
-  const rows = context ? `<p>${esc(value(contextInfo))}</p><p class="hint">上下文表示当前会话的上下文容量使用情况，与账号额度分别统计。</p>`
+  const rows = local ? `<p>${contextInfo.used == null ? '尚未统计' : esc(String(contextInfo.used))} / ${contextInfo.limit == null ? '未获取' : esc(String(contextInfo.limit))} tokens</p><p>模型 · ${esc(contextInfo.model)}</p>${contextInfo.updated ? `<p>上次调用 · ${esc(new Date(contextInfo.updated).toLocaleString())}</p>` : ''}<p class="hint">显示最近一次有效模型调用的 token 用量；生成期间保留上次调用数据。</p>`
+    : context ? `<p>${esc(value(contextInfo))}</p><p class="hint">上下文表示当前会话的上下文容量使用情况，与账号额度分别统计。</p>`
     : `<p class="hint">额度表示账号在对应周期内的使用限制，百分比统一显示剩余额度。</p>` + (m.plan ? `<p>方案 · ${esc(m.plan)}</p>` : '') + (m.missing || !bars.length ? '<p>未获取额度数据</p>' : bars.map(b => `<p>${esc(b.label)} · ${esc(value(b))}${b.detail ? `<br><span class="hint">${esc(b.detail)}</span>` : ''}${b.reset ? `<br><span class="hint">${esc(b.reset)}</span>` : ''}</p>`).join(''))
       + (m.extra ? `<p>额外用量余额 · ${esc(m.extra)}</p>` : '');
   const updated = m.updated ? new Date(m.updated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
   openSheet('usage', `<h3>${context ? '上下文说明' : '额度说明'}</h3>${rows}${!context && updated ? `<p class="hint">${m.cached ? '缓存数据' : '最近更新'} · ${esc(updated)}</p>` : ''}${!context && $('quotaStatus').textContent ? `<p class="hint">${esc($('quotaStatus').textContent)}</p>` : ''}<button id="refreshUsage" class="opt">刷新数据</button>`);
-  $('refreshUsage').onclick = () => { closeSheet(); status('正在读取额度…'); send({ t: 'usage' }); };
+  $('refreshUsage').onclick = () => { closeSheet(); status(local ? '正在读取上下文…' : '正在读取额度…'); send({ t: 'usage' }); };
 }
 function menuGroup(key, label, content, initial = true) {
   const saved = store.get('menu-group:' + key);
   const open = saved === null ? initial : saved === '1';
   return `<details class="mainGroup" data-menu-group="${key}" ${open ? 'open' : ''}><summary>${esc(I18N.tr(label))}</summary><div class="mainGroupBody">${content}</div></details>`;
+  }
+function closePerfPanel() {
+  _perfOpen = false;
+  $('perfPanel').hidden = true;
 }
+function togglePerfPanel() {
+  _perfOpen = !_perfOpen;
+  $('perfPanel').hidden = !_perfOpen;
+}
+$('perfChip').addEventListener('click', togglePerfPanel);
+document.addEventListener('pointerdown', e => {
+  if (_perfOpen && !e.target.closest('#perfPanel, #perfChip')) closePerfPanel();
+});
 $('sheet').addEventListener('toggle', e => {
   if (e.target.matches('details[data-menu-group]')) store.set('menu-group:' + e.target.dataset.menuGroup, e.target.open ? '1' : '0');
   if (e.target.dataset.compatibilityApp) {
@@ -1217,6 +1300,10 @@ function showAgentManager(refresh = false) {
   const known = rows.filter(a => a.installed === true), unknown = rows.filter(a => a.installed === null), missing = rows.filter(a => a.installed === false);
   const row = a => {
     const ready = agentReports.get(agentComputerKey())?.find(r => r.app === a.app)?.windows;
+    if (a.app === 'opencode') {
+      const note = connLaunchNote(a) || (ready || a.running ? '已连接' : a.reason || '未启动 · 点击启动后在后台运行');
+      return `<label class="opt agentManageRow"><span class="optLogo" data-logo="opencode"></span><span class="lbl">OpenCode<span class="sub">${esc(I18N.tr(note))}</span></span>${a.installed === true ? `<input type="checkbox" data-agent-start="opencode" aria-label="OpenCode" ${selected.includes(a.app) ? 'checked' : ''}>` : ''}</label>`;
+    }
     const note = connLaunchNote(a) || (ready ? '已连接' : a.running ? '已运行，请开启调试端口' : a.reason || (a.installed === null ? '安装状态待确认' : '未启动'));
     return `<label class="opt agentManageRow"><span class="cTile cBrand agentManageLogo"><img class="on-dark" src="logo-${a.app}-dark.svg" alt=""><img class="on-light" src="logo-${a.app}-light.svg" alt=""></span><span class="lbl">${esc(a.name)}<span class="sub">${esc(I18N.tr(note))}</span></span>${a.installed === true ? `<input type="checkbox" data-agent-start="${a.app}" aria-label="${esc(a.name)}" ${selected.includes(a.app) ? 'checked' : ''}>` : ''}</label><details data-compatibility-app="${a.app}" ${compatibilityOpen.has(compatibilityKey(a.app)) ? 'open' : ''}><summary>${esc(I18N.tr('版本与适配'))}</summary><pre class="hint">${esc(compatibilityText(a.app))}</pre><button class="opt" data-compatibility-refresh="${a.app}">${esc(I18N.tr('重新检查适配'))}</button></details>`;
   };
@@ -1272,7 +1359,7 @@ function showMainMenu() {
     <button class="opt" data-act="screen"><span class="lbl">画面<span class="sub">查看绘图与仿真窗口</span></span></button>
     ${currentApp === 'codex' ? '<button class="opt" data-act="codexRetryMenu"><span class="lbl">Codex 自动重试<span class="sub">' + (codexAutoRetryEnabled() ? `已开启 · 最多 ${codexAutoRetryCount()} 次` : '已关闭') + '</span></span><span class="tag">›</span></button>' : ''}
     ${supportsCapability('settings') ? '<button class="opt" data-act="settings"><span class="lbl">设置</span></button>' : ''}
-    ${['cursor', 'devin', 'codex', 'fusion'].includes(currentApp) ? `<button class="opt" data-act="executionToggle" role="switch" aria-checked="${executionRecordsShown()}"><span class="lbl">显示执行指令<span class="sub">包含工具读取和搜索记录；关闭后在本轮结束时隐藏</span></span><span class="switch${executionRecordsShown() ? ' on' : ''}" aria-hidden="true"></span></button>` : ''}
+    ${['cursor', 'devin', 'codex', 'fusion', 'opencode'].includes(currentApp) ? `<button class="opt" data-act="executionToggle" role="switch" aria-checked="${executionRecordsShown()}"><span class="lbl">显示执行指令<span class="sub">包含工具读取和搜索记录；关闭后在本轮结束时隐藏</span></span><span class="switch${executionRecordsShown() ? ' on' : ''}" aria-hidden="true"></span></button>` : ''}
     ${lastChat?.changed && !lastChat?.readonly ? `<button class="opt" data-act="toggleChanges"><span class="lbl">${hiddenChangeNotices.has(changeNoticeKey()) ? '显示改动' : '隐藏改动提示'}</span></button>` : ''}`;
   const connectionItems = `
     <button class="opt" data-act="agentManager"><span class="lbl">Agent 管理<span class="sub">检测安装状态、选择并启动 Agent</span></span></button>

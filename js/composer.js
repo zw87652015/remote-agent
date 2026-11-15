@@ -3,7 +3,7 @@ const text = $('text');
 let questionCompose = null;
 const drafts = new Map(), draftMentions = new Map();
 const dirtyDrafts = new Set();
-const inputHistory = new Map(), chatInputCache = new Map();
+const inputHistory = new Map(), chatInputCache = new Map(), sentInputCache = new Map();
 let inputRecall = null;
 function endInputRecall() {
   if (inputRecall) inputRecall.history.delete(inputRecall.key);
@@ -13,7 +13,12 @@ function chatInputKey(chat = lastChat) { return [currentComputer()?.id || '', vi
 function rememberInputHistory(chat) {
   if (!chat) return;
   const key = chatInputKey(chat), rows = new Map(chatInputCache.get(key) || []);
-  for (const it of chat.items || []) if (it.k === 'human' && it.t?.trim()) { rows.delete(it.i); rows.set(it.i, it.t); }
+  const sent = sentInputCache.get([currentComputer()?.id || '', currentApp, chat.thread || ''].join('|')) || [];
+  const originals = new Map(sent.flatMap(row => row.ids.map(id => [id, row.text])));
+  for (const it of chat.items || []) if (it.k === 'human' && it.t?.trim()) {
+    const original = [it.i, ...(it.nativeIds || [])].find(id => originals.has(id));
+    rows.delete(it.i); rows.set(it.i, original === undefined ? it.t : originals.get(original));
+  }
   chatInputCache.set(key, [...rows].slice(-10));
 }
 const pendingSends = new Map(), draftVersions = new Map();
@@ -22,10 +27,11 @@ let pendingEchoes = [];
 function echoTextMatches(it, t) {
   const s = (it.t || '').trim(), x = t.trim();
   return s === x || s.startsWith(x + '\n\n附加文件（')
-    || s.replace(/(?:^|\n)\[(?:图片|附件) \d+\](?:\n\[(?:图片|附件) \d+\])*$/, '').trim() === x;
+    || RemoteAgentRules.withoutAttachmentLabels(s).trim() === x;
 }
 function pushEcho(requestId, text, kind) {
-  pendingEchoes.push({ requestId, text, kind, at: Date.now(), sel: viewSel });
+  const images = desktopAttachments.map(file => file.preview).filter(Boolean);
+  pendingEchoes.push({ requestId, text, kind, images, at: Date.now(), sel: viewSel });
   queueChatRender();
 }
 let inputRevision = 0;
@@ -57,12 +63,19 @@ function sendReceipt(value) {
   const targetThread = viewSel.split('|').pop() || '';
   const candidate = queuedChat?.sel === viewSel ? queuedChat.chat : lastChat;
   const latest = candidate?.thread === targetThread ? candidate : null;
-  pendingSends.set(requestId, { requestId, draft: activeDraft, text: value, computer: currentComputer()?.id || '', mode, version: draftVersions.get(activeDraft) || 0, revision: inputRevision,
+  pendingSends.set(requestId, { requestId, draft: activeDraft, text: value, computer: currentComputer()?.id || '', app: currentApp, mode, version: draftVersions.get(activeDraft) || 0, revision: inputRevision,
     mentions: JSON.stringify(mentionsFor(value)), attachmentIds: desktopAttachments.map(file => file.id),
     ...(mode === 'chat' ? { scope: messageScope(), thread: targetThread, before: new Set((latest?.items || []).filter(it => it.k === 'human').map(it => it.i)),
       beforeQueues: new Set((latest?.queued || []).map(it => it.id)), queuedSameText: (latest?.queued || []).filter(it => echoTextMatches(it, value)).length } : {}) });
   document.dispatchEvent(new Event('composer-state'));
   return { requestId, draft: activeDraft, draftEpoch };
+}
+function rememberSentInput(sent, receipt) {
+  const thread = receipt.sel?.split('|').pop() || sent.thread || '';
+  const key = [sent.computer, sent.app, thread].join('|');
+  const rows = (sentInputCache.get(key) || []).filter(row => row.requestId !== sent.requestId);
+  rows.push({ requestId: sent.requestId, ids: [...new Set([receipt.messageId, receipt.queueId].filter(Boolean))], text: sent.text });
+  sentInputCache.set(key, rows.slice(-10));
 }
 function confirmSent(m, render = true) {
   if (m.pending) {
@@ -90,11 +103,15 @@ function confirmSent(m, render = true) {
   const sent = pendingSends.get(m.requestId);
   if (!sent) return;
   pendingSends.delete(m.requestId);
+  if (sent.mode === 'chat' && sent.app === 'codex' && (m.messageId || m.queueId)) rememberSentInput(sent, m);
   for (const key of inputHistory.keys()) if (key.startsWith(sent.draft + '|')) inputHistory.delete(key);
   const here = (currentComputer()?.id || '') === sent.computer && mode === sent.mode && (draftKey() === sent.draft || m.sel === viewSel);
   const unchanged = sent.mode === 'chat' && currentApp !== 'fusion' ? composerSendMatches(sent)
     : inputRevision === sent.revision && text.value === sent.text;
-  if ((!here || unchanged) && drafts.get(sent.draft) === sent.text && (draftVersions.get(sent.draft) || 0) === sent.version) { drafts.delete(sent.draft); draftMentions.delete(sent.draft); }
+  if ((!here || unchanged) && drafts.get(sent.draft) === sent.text && (draftVersions.get(sent.draft) || 0) === sent.version) {
+    drafts.delete(sent.draft); draftMentions.delete(sent.draft);
+    if (sent.mode === 'chat') dirtyDrafts.add(sent.draft);
+  }
   if (here && (['正在发送…', '正在确认电脑端接收…', '连接已断开，发送结果待确认'].includes(pendingStatus) || $('msg').textContent === '发送结果未确认：' + sent.confirmationError) && ![...pendingSends.values()].some(p => p.draft === activeDraft)) {
     status(m.queued ? 'Agent 正在运行，已加入排队，这一轮结束后自动发送' : '已发送');
   }
@@ -102,7 +119,9 @@ function confirmSent(m, render = true) {
     if (sent.mode === 'chat') { draftRevision++; pendingDesktopDraft = null; }
     drafts.delete(activeDraft); draftMentions.delete(activeDraft);
     text.value = ''; MN.mentions = []; MN.value = ''; mentionHide(text); autosize(); mirroredDraft = '';
-    dirtyDrafts.delete(activeDraft); queueDraftSync();
+    if (sent.mode === 'chat') dirtyDrafts.add(activeDraft);
+    else dirtyDrafts.delete(activeDraft);
+    queueDraftSync();
   } else if (here && sent.mode === 'chat' && !unchanged) {
     draftRevision++; pendingDesktopDraft = null;
     dirtyDrafts.add(activeDraft); queueDraftSync();
@@ -157,6 +176,13 @@ function receiptMatchesHuman(it, receipt) {
 function receiveQueueDone(m) {
   receiveQueueEdit(m);
   if (!m.ok || m.sel !== viewSel || m.action === 'read') return;
+  if (currentApp === 'codex' && m.action === 'edit') {
+    const key = [currentComputer()?.id || '', currentApp, viewSel.split('|').pop() || ''].join('|');
+    for (const row of sentInputCache.get(key) || []) if ((m.echoes || []).includes(row.requestId)) {
+      row.text = m.text;
+      row.ids = [...new Set([...row.ids, m.messageId, m.queueId].filter(Boolean))];
+    }
+  }
   const removed = new Set();
   for (const echo of pendingEchoes) {
     if (echo.sel !== viewSel || !(m.echoes || []).includes(echo.requestId)) continue;
@@ -203,7 +229,7 @@ function receiveDraft(m) {
   }
   if ([...pendingSends.values()].some(sent => sent.draft === activeDraft && sent.revision !== inputRevision)) return;
   if (draftAckRevision !== draftRevision || MN.mentions.length) return;
-  if (composing || document.activeElement === text || document.activeElement?.dataset?.ovInput) { pendingDesktopDraft = m; return; }
+  if (composing) { pendingDesktopDraft = m; return; }
   pendingDesktopDraft = null;
   if (text.value !== m.text) {
     const selection = [text.selectionStart, text.selectionEnd, text.selectionDirection];
@@ -220,7 +246,7 @@ function autosize() {
   text.style.height = 'auto'; text.style.height = text.scrollHeight + 'px';
   field.style.height = fieldHeight;
   updateMathPrev(); updateComposeCompact();
-  if (text.offsetHeight !== oldHeight) noteChatLayoutChange();
+  if (mode === 'chat' && text.offsetHeight !== oldHeight) noteChatLayoutChange();
   if (questionCompose?.sel === viewSel && document.body.classList.contains('kb')) fitViewport();
   document.dispatchEvent(new Event('composer-state'));
 }
@@ -481,6 +507,7 @@ $('stop').onclick = async () => {
   status('正在停止…');
 };
 function updateSendMode() {
+  for (const id of ['add', 'img', 'uploadDoc']) $(id).hidden = false;
   if (typeof updateVoiceButton === 'function') updateVoiceButton();
   const answering = mode === 'chat' && questionCompose?.sel === viewSel;
   const split = !answering && devinBusySplit();
@@ -498,8 +525,9 @@ function updateSendMode() {
 }
 
 /* One presentation controller owns explicit/question folding and landscape idle folding. */
-let composeCompactTimer = 0, composerEngaged = false, composerCollapsed = false, composerPointerPending = false;
-const portraitComposer = () => mode === 'chat' && !document.body.classList.contains('land');
+let composeCompactTimer = 0, composerEngaged = false, composerPointerPending = false;
+const composerCollapsed = { chat: false, terminal: false };
+const portraitComposer = () => (mode === 'chat' || mode === 'terminal') && !document.body.classList.contains('land');
 function questionComposerFocused() {
   const focused = document.activeElement;
   return focused?.matches('#qnBar input, #qnBar textarea, #qnBar select') && !focused.disabled;
@@ -508,19 +536,19 @@ function micHeld() { return $('mic')?.classList.contains('on') || (typeof voiceS
 function micPressing() { return $('mic')?.classList.contains('on') || (typeof voiceSession !== 'undefined' && !!voiceSession?.held); }
 function composeIdleWanted() {
   const focused = document.activeElement;
-  return mode === 'chat' && focused !== text && !composerEngaged && !composing
-    && !focused?.matches('#qnBar input, #qnBar textarea, #qnBar select')
-    && $('mentionBox').hidden && $('fusionWelcome').hidden
-    && !document.getElementById('imageEditor')?.open && !micHeld();
+  return (mode === 'chat' || mode === 'terminal') && focused !== text && !composerEngaged && !composing
+    && (mode === 'terminal' ? $('termPasswordBox').hidden
+      : !questionComposerFocused() && $('mentionBox').hidden && $('fusionWelcome').hidden
+        && !document.getElementById('imageEditor')?.open && !micHeld());
 }
 function endComposerEditing() {
   composerEngaged = false;
   const focused = document.activeElement;
-  if (focused === text || focused?.matches('#qnBar input, #qnBar textarea, #qnBar select')) focused.blur();
+  if (focused === text || focused?.matches('#qnBar input, #qnBar textarea, #qnBar select, #termPassword')) focused.blur();
   updateComposeCompact();
 }
 function composerLayoutBusy() {
-  return chatTouching || chatMomentum || chatScrolling || turnNavPointer?.dragging || $('sheet').classList.contains('open');
+  return mode === 'chat' && (chatTouching || chatMomentum || chatScrolling || turnNavPointer?.dragging) || $('sheet').classList.contains('open');
 }
 // Only where vertical room is scarce, judged by the window's actual shape rather than the reported
 // orientation (foldables disagree on what "portrait" means): a tall phone window keeps its tools,
@@ -529,21 +557,21 @@ const composeCompactAllowed = () => window.innerHeight / window.innerWidth < 1.6
 window.addEventListener('resize', () => updateComposeCompact());
 function composeCompactWanted() {
   // Both callers have already checked composeIdleWanted().
-  return composeCompactAllowed() && !text.value.trim() && !$('attachments').children.length;
+  return composeCompactAllowed() && !text.value.trim() && (mode !== 'chat' || !$('attachments').children.length);
 }
 function setComposerPresentation(idle, compact) {
   const oldCompact = document.body.classList.contains('composeCompact');
   if (oldCompact === compact && document.body.classList.contains('composeIdle') === idle) return;
-  const stick = isFollowingBottom();
+  const stick = mode === 'chat' && isFollowingBottom();
   const foot = document.querySelector('footer');
   const h0 = foot.offsetHeight;
-  if (idle && !stick && !atBottom()) {
+  if (mode === 'chat' && idle && !stick && !atBottom()) {
     const style = getComputedStyle(text);
     const idleHeight = Math.max(parseFloat(style.minHeight), parseFloat(style.fontSize) * 2.9 + 12);
     const reduction = compact ? h0 : Math.max(0, text.offsetHeight - idleHeight);
     if (list.scrollHeight - list.scrollTop - list.clientHeight < reduction) return;
   }
-  noteChatLayoutChange();
+  if (mode === 'chat') noteChatLayoutChange();
   document.body.classList.toggle('composeIdle', idle);
   document.body.classList.toggle('composeCompact', compact);
   const fold = $('composerFold');
@@ -561,21 +589,21 @@ function setComposerPresentation(idle, compact) {
 function setComposeCompact(on) { setComposerPresentation(on, on); }
 function setComposerFold(on) {
   composerPointerPending = false;
-  composerCollapsed = on;
+  composerCollapsed[mode] = on;
   endComposerEditing();
   composerEngaged = true;
   updateComposeCompact();
 }
 $('composerFold').onclick = () => setComposerFold(!document.body.classList.contains('composeCompact'));
 function updateComposeCompact() {
-  if (mode === 'chat' && (composerCollapsed || questionComposerFocused())) {
+  if ((mode === 'chat' || mode === 'terminal') && (composerCollapsed[mode] || mode === 'chat' && questionComposerFocused())) {
     clearTimeout(composeCompactTimer); composeCompactTimer = 0;
     setComposerPresentation(false, true);
     return;
   }
   // Explicit/question folding is immediate and does not use the idle delay.
   if (document.body.classList.contains('composeCompact') && !document.body.classList.contains('composeIdle')) {
-    if (mode === 'chat' && composerPointerPending) return;
+    if ((mode === 'chat' || mode === 'terminal') && composerPointerPending) return;
     clearTimeout(composeCompactTimer); composeCompactTimer = 0;
     setComposerPresentation(false, false);
   }
@@ -603,12 +631,12 @@ document.querySelector('.composerBox').addEventListener('click', e => {
   if (portraitComposer()) return;
   if (document.body.classList.contains('composeCompact')) {
     if (e.target.closest('button')) {
-      composerCollapsed = true;
+      composerCollapsed[mode] = true;
       return;
     }
     e.preventDefault(); e.stopPropagation();
     composerPointerPending = false;
-    composerCollapsed = false;
+    composerCollapsed[mode] = false;
     clearTimeout(composeCompactTimer); composeCompactTimer = 0;
     composerEngaged = true;
     setComposeCompact(false);
@@ -634,10 +662,15 @@ document.addEventListener('pointercancel', () => {
 });
 for (const event of ['pointerup', 'keyup']) $('mic').addEventListener(event, () => queueMicrotask(updateComposeCompact));
 document.addEventListener('focusin', e => {
-  if (e.target.matches('#qnBar input, #qnBar textarea, #qnBar select')) updateComposeCompact();
+  if (mode === 'terminal' && e.target.id === 'termPassword') {
+    composerCollapsed.terminal = false;
+    composerEngaged = true;
+    updateComposeCompact();
+  }
+  else if (e.target.matches('#qnBar input, #qnBar textarea, #qnBar select')) updateComposeCompact();
 });
 document.addEventListener('focusout', e => {
-  if (e.target.matches('#qnBar input, #qnBar textarea, #qnBar select')) queueMicrotask(updateComposeCompact);
+  if (e.target.matches('#qnBar input, #qnBar textarea, #qnBar select, #termPassword')) queueMicrotask(updateComposeCompact);
 });
 document.addEventListener('click', e => {
   composerPointerPending = false;
@@ -649,6 +682,13 @@ document.addEventListener('click', e => {
   if (mode === 'chat' && e.target.closest('[data-question-compose]')) return;
   endComposerEditing();
 });
+function submitComposerReceipt(v, when) {
+  const receipt = sendReceipt(v);
+  if (!receipt) return;
+  if (mode === 'chat') { status('正在发送…'); pushEcho(receipt.requestId, v, when === 'queue' || (!when && chatBusy) ? 'queue' : 'chat'); }
+  if (send({ t: 'send', text: v, submit: true, ...receipt, ...(when ? { when } : {}), ...mentionsFor(v) }) === false) failPendingSend(receipt.requestId);
+  if (mode === 'chat') jumpToLatest();
+}
 function sendComposer() {
   if ($('send').disabled) return;
   if (mode === 'terminal') return sendTerminalInput();
@@ -661,12 +701,7 @@ function sendComposer() {
   saveDraft();
   const follow = codexFollow();
   const when = devinBusySplit() || cursorBusyQueue() || follow === 'queue' ? 'queue' : follow === 'steer' ? 'now' : '';
-  const receipt = sendReceipt(v);
-  if (!receipt) return;
-  if (mode === 'chat') { status('正在发送…'); pushEcho(receipt.requestId, v, when === 'queue' || (!when && chatBusy) ? 'queue' : 'chat'); }
-  const sent = send({ t: 'send', text: v, submit: true, ...receipt, ...(when ? { when } : {}), ...mentionsFor(v) });
-  if (sent === false) failPendingSend(receipt.requestId);
-  if (mode === 'chat') jumpToLatest();
+  submitComposerReceipt(v, when);
 }
 async function sendComposerNow() {
   if ($('sendNow').disabled) return;
@@ -678,12 +713,7 @@ async function sendComposerNow() {
   const follow = codexFollow();
   const steer = !follow || follow === 'queue';
   if (!await ask(steer ? '立即追加到当前任务？' : '改为排队，等当前任务结束后再发送？', steer ? '立即追加' : '排队', true)) return;
-  status('正在发送…');
-  const receipt = sendReceipt(v);
-  if (!receipt) return;
-  pushEcho(receipt.requestId, v, steer ? 'chat' : 'queue');
-  if (send({ t: 'send', text: v, submit: true, ...receipt, when: steer ? 'now' : 'queue', ...mentionsFor(v) }) === false) failPendingSend(receipt.requestId);
-  jumpToLatest();
+  submitComposerReceipt(v, steer ? 'now' : 'queue');
 }
 $('send').onclick = sendComposer;
 $('sendNow').onclick = sendComposerNow;

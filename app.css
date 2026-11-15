@@ -176,6 +176,12 @@ body[data-app="fusion"] .appAvatar, body.fusion header #title .appAvatar { backg
 [data-logo="cursor"], .railRow[data-app="cursor"] .railLogo { background-image: url(logo-cursor-dark.svg); }
 [data-logo="devin"], .railRow[data-app="devin"] .railLogo { background-image: url(logo-devin-dark.svg); }
 [data-logo="codex"], .railRow[data-app="codex"] .railLogo { background-image: url(logo-codex-dark.svg); }
+[data-logo="opencode"], body[data-app="opencode"] .appAvatar { background-image: url(logo-opencode.svg); }
+.opencodeQuestion fieldset { border: 1px solid var(--line); border-radius: 10px; margin: 8px 0; padding: 10px; }
+.opencode-option { display: flex; align-items: start; gap: 8px; margin: 10px 0; }
+.opencode-option input { flex: none; width: auto; }
+.opencode-option small { display: block; color: var(--fg-3); }
+.opencodeQuestion input[data-opencode-custom] { box-sizing: border-box; width: 100%; }
 :root[data-theme="light"] [data-logo="cursor"], :root[data-theme="light"] .railRow[data-app="cursor"] .railLogo { background-image: url(logo-cursor-light.svg); }
 :root[data-theme="light"] [data-logo="devin"], :root[data-theme="light"] .railRow[data-app="devin"] .railLogo { background-image: url(logo-devin-light.svg); }
 :root[data-theme="light"] [data-logo="codex"], :root[data-theme="light"] .railRow[data-app="codex"] .railLogo { background-image: url(logo-codex-light.svg); }
@@ -513,28 +519,31 @@ div.math { display: block; margin: .35em 0; text-align: center; }
 /* Tool rows: quiet lines, chips mono. */
 .tool, .toolrow {
   font-size: 13px; color: var(--fg-2); background: transparent; border: 0;
-  border-radius: 12px; padding: 6px 10px;
+  border-radius: 12px; padding: 6px 10px; max-width: 100%;
 }
 .tool { font: 12.5px/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace; color: var(--fg-3); }
 .tool .txt { display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .toolrow .trow, .tool .trow { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .toolrow .trow.toggle, .tool .trow.toggle { cursor: pointer; }
 .tool .ticon, .toolrow .ticon { width: 15px; height: 15px; flex: none; color: var(--fg-3); }
-.tool .tl, .toolrow .tl { font-weight: 500; flex: none; font-family: inherit; }
+.tool .tl, .toolrow .tl { font-weight: 500; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: inherit; }
 .toolrow .tl { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+.toolrow > .trow.toggle:not(:has(> .chip)) > .tl { flex: 1; }
+.toolrow > .trow > .chip { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tool .tsub, .toolrow .tsub { color: var(--fg-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .tool .dur, .toolrow .dur { flex: none; font-size: 11px; color: var(--fg-3); background: var(--s2); border-radius: 999px; padding: 1px 7px; font-variant-numeric: tabular-nums; }
 .tool .chev, .toolrow .chev { flex: none; margin-left: auto; color: var(--fg-4); font-size: 11px; }
 .tool .chips, .toolrow .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.tool .chips > .chip, .toolrow .chips > .chip { min-width: 0; max-width: 100%; }
 .chip { font: 11.5px ui-monospace, "SF Mono", Menlo, Consolas, monospace; background: var(--code-bg); color: var(--fg-2); padding: 1px 6px; border-radius: var(--r-xs); overflow-wrap: anywhere; }
 .chip[data-file] { cursor: pointer; color: var(--accent-text); text-decoration: underline dotted; text-underline-offset: 2px; }
 .tool .stat, .toolrow .stat { flex: none; font-weight: 600; font-size: 11px; }
 .tool .stat.add, .toolrow .stat.add { color: var(--add); }
 .tool .stat.del, .toolrow .stat.del { color: var(--del); }
-.tcmd { margin: 4px 0 0; background: var(--pre-bg); border: 1px solid var(--line); color: var(--fg); padding: 6px 8px; border-radius: var(--r-sm); white-space: pre; overflow: hidden; font: 12px ui-monospace, "SF Mono", Menlo, Consolas, monospace; display: none; }
+.tcmd { margin: 4px 0 0; max-width: 100%; min-width: 0; background: var(--pre-bg); border: 1px solid var(--line); color: var(--fg); padding: 6px 8px; border-radius: var(--r-sm); white-space: pre; overflow: hidden; font: 12px ui-monospace, "SF Mono", Menlo, Consolas, monospace; display: none; }
 .toolrow.open .tcmd { display: block; max-height: 40vh; overflow: auto; }
 .toolrow.open { background: var(--s1); }
-.tdiff { margin: 4px 0 0; background: var(--pre-bg); border: 1px solid var(--line); border-radius: var(--r-sm); overflow-x: auto; display: none; font: 12px ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+.tdiff { margin: 4px 0 0; max-width: 100%; min-width: 0; background: var(--pre-bg); border: 1px solid var(--line); border-radius: var(--r-sm); overflow-x: auto; display: none; font: 12px ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
 .toolrow.open .tdiff { display: block; }
 .tdiff .dl { white-space: pre; padding: 0 8px; color: var(--fg-3); }
 .tdiff .dl.di { background: var(--addbg); color: var(--add); }
@@ -698,6 +707,9 @@ body.kb.chatmode #qnBar.codex .qnQ { max-height: none; overflow: visible; }
 #qnBar.codex .qnAct button:disabled { opacity: .4; }
 #qnBar.codex .qnAct { flex-wrap: wrap; flex: none; }
 #qnBar.codex .qnOpt { width: 100%; min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+body[data-app="devin"] #qnBar .qnOpt { width: 100%; min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+body[data-app="devin"] #qnBar .qnOpt > span { flex: 1; min-width: 0; }
+body[data-app="devin"] #qnBar .qnQ { overflow-wrap: anywhere; }
 #qnBar .qnAct .primary:disabled { opacity: .4; }
 
 /* ---------- composer ---------- */
@@ -706,17 +718,18 @@ footer {
   padding: 6px 12px max(10px, env(safe-area-inset-bottom)); min-width: 0; background: var(--bg);
 }
 body.kb footer { padding-bottom: 8px; }
-/* Status and elapsed time share a compact row with the changed-file controls. */
+/* Existing terminal status keeps its inline layout; chat has separate notice and metric rows. */
 #footerStatus {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
   min-height: 18px; padding: 2px 10px 0; min-width: 0;
 }
-#footerStatus:not(:has(#msg:not(:empty):not(.quiet), #termStatus:not([hidden]), #elapsed:not([hidden]), #changeNotice:not([hidden]))) { display: none; }
-#composeStatus { display: contents; }
+#footerStatus:not(:has(#msg:not(:empty):not(.quiet), #termStatus:not([hidden]), #elapsed:not([hidden]), #perfChip:not([hidden]), #changeNotice:not([hidden]))) { display: none; }
+#composeStatus, #composeMetrics, #composeMetricsRight { display: contents; }
 #msg, #termStatus { flex: 1; min-width: 0; font-size: 11.5px; color: var(--fg-4); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #msg:empty, #msg.quiet { display: none; }
 #msg.err, #termStatus.err { color: var(--err); }
-body.term #composeStatus:has(#termStatus:not([hidden])) #msg { display: none; }
+body.term #composeMetrics, body.term #perfPanel, body.term #msg,
+body.term #retryChat, body.term #stop, body.term #sendNow { display: none; }
 #elapsed { flex: none; font-size: 11.5px; color: var(--fg-4); font-variant-numeric: tabular-nums; }
 .attachmentRow { display: flex; align-items: flex-end; gap: 8px; }
 .attachmentRow[hidden] { display: none; }
@@ -759,6 +772,8 @@ body.term #composeStatus:has(#termStatus:not([hidden])) #msg { display: none; }
   max-width: 60vw; overflow: hidden; text-overflow: ellipsis;
 }
 #chatTools button:active, #termTools button:active { background: var(--s2); transform: none; }
+#chatTools #pickModel { flex-shrink: 1; min-width: 0; max-width: min(50%, 220px); }
+#pickModelLabel { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #chatTools #pickModel::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex: none; }
 #chatTools #pickAgents::before {
   content: ""; width: 14px; height: 14px; flex: none; background: currentColor; opacity: .7;
@@ -776,7 +791,7 @@ body.term #composeStatus:has(#termStatus:not([hidden])) #msg { display: none; }
 #termTools .termExtra { display: none; }
 body.land #termTools .termExtra { display: inline-flex; align-items: center; }
 body.land #termMore { display: none; }
-.sendRow { display: flex; align-items: center; gap: 2px; padding-top: 4px; }
+.sendRow { position: relative; display: flex; align-items: center; gap: 2px; padding-top: 4px; }
 .sendTools { display: flex; align-items: center; gap: 2px; flex: 1 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: none; }
 .sendTools::-webkit-scrollbar { display: none; }
 .sendTools > #add, .sendTools > #img, .sendTools > #uploadDoc {
@@ -806,19 +821,20 @@ body.term #send { min-height: 44px; }
 }
 
 /* Idle drafts keep the tools visible while the text uses at most two lines. */
-body.composeIdle.chatmode #text { max-height: calc(2.9em + 12px); overflow-y: hidden; }
+body.composeIdle:is(.chatmode, .term) #text { max-height: calc(2.9em + 12px); overflow-y: hidden; }
 
-/* Both orientations share the folded model/project row. */
+/* Chat and terminal share one folding control in both orientations. */
 #composerFold { display: none; }
 body:is(.chatmode, .term) .composerBox { position: relative; }
 body.chatmode #chatTools { padding-right: 36px; }
-body.chatmode #composerFold {
+body.term #termTools { padding-right: 36px; }
+body:is(.chatmode, .term) #composerFold {
   position: absolute; top: 8px; right: 8px; z-index: 2; display: grid; place-items: center;
   width: 28px; height: 28px; min-height: 0; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--fg-3);
 }
-body.chatmode #composerFold:active { background: var(--s2); transform: none; }
-body.composeCompact.chatmode #composerFold svg { transform: rotate(180deg); }
-body.composeCompact.chatmode .composerBox { display: block; min-height: 48px; padding: 8px; border-radius: var(--r-xl); }
+body:is(.chatmode, .term) #composerFold:active { background: var(--s2); transform: none; }
+body.composeCompact:is(.chatmode, .term) #composerFold svg { transform: rotate(180deg); }
+body.composeCompact:is(.chatmode, .term) .composerBox { display: block; min-height: 48px; padding: 8px; border-radius: var(--r-xl); }
 body.composeCompact.chatmode #chatTools { display: flex; padding: 0 34px 0 0; overflow: hidden; -webkit-mask-image: none; mask-image: none; }
 body.composeCompact.chatmode #chatTools > :not(#pickModel):not(#pickAgents):not(#pickEditor):not(#fusionConfig) { display: none; }
 body.composeCompact.chatmode #pickModel { flex: 1 1 auto; min-width: 0; max-width: none; padding: 0 6px; }
@@ -830,34 +846,24 @@ body.land.composeCompact.chatmode #pickModel,
 body.land.composeCompact.chatmode #pickAgents { flex: none; min-width: auto; max-width: 60vw; padding: 0 10px; }
 body.land.composeCompact.chatmode #pickEditor { flex: none; }
 body.land.composeCompact.chatmode #fusionConfig { flex: 0 1 auto; }
-body.composeCompact.chatmode .composerField,
-body.composeCompact.chatmode .sendRow,
-body.composeCompact.chatmode .attachmentRow,
-body.composeCompact.chatmode #mentionBox,
-body.composeCompact.chatmode #mathPrev,
-body.composeCompact.chatmode #retryChat { display: none; }
-body.chatmode:is(:not(.land), .composeCompact) #footerStatus, body.term #footerStatus {
+body.composeCompact.term #termTools { display: flex; flex-wrap: nowrap; padding: 0 34px 0 0; overflow: hidden; }
+body.composeCompact.term #termTools > :not(#pickTerms) { display: none; }
+body.composeCompact.term #pickTerms { min-width: 0; min-height: 30px; max-width: 100%; }
+body.composeCompact:is(.chatmode, .term) .composerField,
+body.composeCompact:is(.chatmode, .term) .sendRow,
+body.composeCompact:is(.chatmode, .term) .attachmentRow,
+body.composeCompact:is(.chatmode, .term) #mentionBox,
+body.composeCompact:is(.chatmode, .term) #mathPrev,
+body.composeCompact:is(.chatmode, .term) #retryChat,
+body.composeCompact.term #termPasswordBox { display: none; }
+body.term #footerStatus {
   position: absolute; align-items: center; justify-content: flex-start; gap: 6px; min-height: 0;
   top: auto; bottom: calc(100% - 2px); left: 14px; right: auto; width: auto; max-width: calc(100% - 28px);
   padding: 2px 7px 0; border-radius: 8px 8px 0 0; background: var(--s1); pointer-events: auto;
 }
-body.chatmode:is(:not(.land), .composeCompact) #elapsed, body.term #elapsed { order: -1; font-size: 10px; }
-body.chatmode:is(:not(.land), .composeCompact) #msg, body.term #msg, body.term #termStatus { font-size: 10px; }
-body:is(.chatmode, .term) .composerBox:has(#changeNotice:not([hidden])),
-body.term .composerBox:has(#termStatus:not([hidden]), #msg:not(:empty):not(.quiet)) { margin-top: 24px; }
-body:is(.chatmode, .term) #footerStatus:has(#changeNotice:not([hidden])) {
-  position: absolute; top: auto; bottom: calc(100% - 2px); left: 14px; right: 14px;
-  min-height: 0; max-width: none; width: auto; padding: 0; border-radius: 0; gap: 8px; background: transparent;
-}
-#footerStatus:has(#changeNotice:not([hidden])) #composeStatus {
-  display: flex; align-items: center; flex: 0 1 auto; min-width: 0; gap: 4px; overflow: hidden;
-  padding: 2px 7px 0; border-radius: 8px 8px 0 0; background: var(--s1);
-}
-#footerStatus:has(#changeNotice:not([hidden])) #msg { font-size: 10px; }
-#footerStatus:has(#changeNotice:not([hidden])) #elapsed {
-  order: -1; flex: 0 1 auto; min-width: 24px; font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-body:is(.chatmode, .term) #footerStatus:has(#changeNotice:not([hidden])) #retryChat { display: block; height: 24px; padding: 0 6px; font-size: 11px; }
+body.term #footerStatus:not(:has(#termStatus:not([hidden]))) { display: none; }
+body.term #termStatus { font-size: 10px; }
+body.term .composerBox:has(#termStatus:not([hidden])) { margin-top: 24px; }
 #changeNotice {
   display: flex; flex: none; align-items: center; margin-left: auto;
   padding: 2px 7px 0; border-radius: 8px 8px 0 0; background: var(--s1);
@@ -868,6 +874,29 @@ body:is(.chatmode, .term) #footerStatus:has(#changeNotice:not([hidden])) #retryC
 }
 #changeNotice svg { width: 14px; height: 14px; }
 #footerStatus #composeStatus:not(:has(#msg:not(:empty):not(.quiet), #termStatus:not([hidden]), #retryChat:not([hidden]), #elapsed:not([hidden]))) { display: none; }
+
+/* Fixed space above the composer keeps notice/metric visibility from moving the transcript. */
+body.chatmode .composerBox { margin-top: 44px; }
+body.chatmode #footerStatus {
+  position: absolute; bottom: 100%; left: 8px; right: 8px; height: 44px;
+  min-height: 0; max-width: none; width: auto; padding: 0; gap: 0;
+  flex-direction: column; align-items: stretch; justify-content: flex-end;
+  background: transparent; border-radius: 0;
+}
+body.chatmode #composeStatus {
+  display: flex; align-items: center; flex: 0 0 20px; min-width: 0; gap: 4px;
+  height: 20px; padding: 0 6px; overflow: hidden; background: transparent; border-radius: 0;
+}
+body.chatmode #msg { font-size: 10px; }
+body.chatmode #retryChat { min-height: 18px; height: 18px; padding: 0 6px; font-size: 10px; }
+body.chatmode #composeMetrics {
+  display: flex; align-items: center; flex: 0 0 24px; min-width: 0; height: 24px; padding: 0 6px;
+}
+body.chatmode #composeMetricsRight { display: flex; align-items: center; gap: 10px; margin-left: auto; }
+body.chatmode #elapsed { order: 0; flex: none; font-size: 11px; }
+body.chatmode #changeNotice { padding: 0; background: transparent; border-radius: 0; }
+body.chatmode #perfChip { min-height: 20px; padding: 0 6px; font-size: 11px; line-height: 20px; }
+body.chatmode #perfPanel { right: 0; left: auto; transform: none; }
 
 /* Short screens (tablets, foldable inners, cover screens): reclaim chrome height. */
 @media (max-height: 760px) {
@@ -895,7 +924,22 @@ body.kb #sessBar, body.kb #taskChip { display: none; }
   -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 19V5m-6 6 6-6 6 6'/%3E%3C/svg%3E") center / contain no-repeat;
   mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 19V5m-6 6 6-6 6 6'/%3E%3C/svg%3E") center / contain no-repeat;
 }
-
+/* ---------- native performance (footer) ---------- */
+#perfChip {
+  flex: none; border: none; border-radius: 999px; background: var(--s2);
+  color: var(--fg-2); font: 500 11.5px/1 var(--ui-font);
+  font-variant-numeric: tabular-nums; white-space: nowrap; padding: 3px 7px; cursor: pointer;
+}
+#perfChip:hover, #perfChip:focus-visible { color: var(--fg-hi); }
+#perfPanel {
+  position: absolute; bottom: calc(100% + 4px); left: 50%; transform: translateX(-50%);
+  z-index: 15; margin: 0; padding: 10px 12px; background: var(--s1); border: 1px solid var(--line-2);
+  border-radius: 14px; box-shadow: var(--shadow-1); font: 450 12px/1.5 var(--ui-font);
+  white-space: nowrap; min-width: 150px; max-width: 78vw;
+}
+#perfPanel .perf-row { display: flex; justify-content: space-between; gap: 14px; padding: 1.5px 0; }
+#perfPanel .perf-key { color: var(--fg-3); }
+#perfPanel .perf-val { color: var(--fg-1); text-align: right; font-variant-numeric: tabular-nums; }
 /* ---------- bottom sheet ---------- */
 #shade {
   position: fixed; inset: 0; z-index: 30; background: var(--scrim);
@@ -1113,6 +1157,8 @@ body.visual #stage { flex: none; margin: auto; }
   padding: 10px 14px 20px; box-sizing: border-box; background: var(--term-bg); color: var(--term-fg);
 }
 #termText .xterm { width: max-content; }
+#termText :is(.xterm, .xterm-screen, .xterm-rows) { user-select: text; -webkit-user-select: text; -webkit-touch-callout: default; }
+#termText .xterm-rows { pointer-events: auto; }
 #termText .xterm-helper-textarea { pointer-events: none; }
 body.term #view { overscroll-behavior: contain; }
 .terminalSizeForm { display: flex; align-items: end; flex-wrap: wrap; gap: 10px; }
@@ -1452,6 +1498,26 @@ body.split.fusion #fusionPanelBody .fusion-detail-actions { bottom: -18px; }
   #gate.pairing #gateApp, #gate.pairing #gateActions { grid-column: 2; grid-row: 6; margin-top: 0; }
   #gate.pairing #gateHelp { grid-column: 2; grid-row: 7; margin: 0; padding-top: 0; }
   #gate.pairing #gateInfo { grid-column: 2; grid-row: 8; margin-top: 0; }
+  #gate.pairing.pairStatus.open { grid-template-rows: repeat(9, auto); padding-top: calc(8px + env(safe-area-inset-top)); padding-bottom: 8px; }
+  #gate.pairing.pairStatus > * { width: auto; max-width: none; margin-left: 0; margin-right: 0; }
+  #gate.pairing.pairStatus #gateHeader { margin-bottom: 0; }
+  #gate.pairing.pairStatus .pairHero { align-items: flex-start; text-align: left; }
+  #gate.pairing.pairStatus #gateLead,
+  #gate.pairing.pairStatus #pairIntro { text-align: left; }
+  #gate.pairing.pairStatus .pairControls { display: contents; margin: 0; padding: 0; border-radius: 0; background: none; box-shadow: none; }
+  #gate.pairing.pairStatus #gateStatus { grid-column: 2; grid-row: 2; }
+  #gate.pairing.pairStatus #gateStatusIcon { width: 36px; height: 36px; margin-bottom: 8px; }
+  #gate.pairing.pairStatus #gateMsg { grid-column: 2; grid-row: 3; margin: 0; }
+  #gate.pairing.pairStatus #gateMsg.err { padding: 8px 12px; }
+  #gate.pairing.pairStatus #gateNote,
+  #gate.pairing.pairStatus #gateWaiting,
+  #gate.pairing.pairStatus #gateApp,
+  #gate.pairing.pairStatus #gateActions { grid-column: 2; grid-row: 7; margin-top: 0; }
+  #gate.pairing.pairStatus #gateEntry { grid-column: 2; grid-row: 4; margin-top: 0; border-radius: 22px; background: var(--s1); padding: clamp(10px, calc(var(--pair-height) * .018), 16px); }
+  #gate.pairing.pairStatus #pairOr { grid-column: 2; grid-row: 5; }
+  #gate.pairing.pairStatus #gateScan { grid-column: 2; grid-row: 6; }
+  #gate.pairing.pairStatus #gateHelp { grid-column: 2; grid-row: 8; min-height: 21px; }
+  #gate.pairing.pairStatus #gateInfo { grid-column: 2; grid-row: 9; }
 }
 
 #gate.pairStatus {
@@ -1485,6 +1551,16 @@ body.split.fusion #fusionPanelBody .fusion-detail-actions { bottom: -18px; }
 #gate.pairStatus #gateBtn, #gate.pairStatus #gateScan { min-height: 44px; height: 44px; font-size: 14px; font-weight: 500; }
 #gate.pairStatus #gateInfo { margin-top: 16px; text-align: center; }
 #gate.pairStatus #gateInfo:empty { display: none; }
+
+@media (min-width: 560px) {
+  body.land:not(.wide) #gate.pairing { height: 100dvh; grid-template-columns: minmax(0, 1fr) clamp(300px, 40vw, 420px); grid-template-rows: auto minmax(0, 1fr); gap: 8px clamp(16px, 3vw, 36px); align-content: stretch; align-items: safe center; }
+  body.land:not(.wide) #gate.pairing.open { display: grid; }
+  body.land:not(.wide) #gate.pairing > * { width: 100%; max-width: none; min-width: 0; margin: 0; }
+  body.land:not(.wide) #gate.pairing #gateHeader { grid-column: 1 / -1; grid-row: 1; }
+  body.land:not(.wide) #gate.pairing .pairHero { grid-column: 1; grid-row: 2; display: flex; align-items: flex-start; text-align: left; padding: 0; }
+  body.land:not(.wide) #gate.pairing #pairIntro { text-align: left; }
+  body.land:not(.wide) #gate.pairing .pairControls { grid-column: 2; grid-row: 2; display: flex; flex-direction: column; margin: 0; padding: 0; border-radius: 0; background: none; box-shadow: none; }
+}
 
 /* ---------- shared connection controls ---------- */
 .cTile { flex: none; width: 36px; height: 36px; border-radius: 10px; background: var(--s2); display: grid; place-items: center; color: var(--fg-hi); font-weight: 600; font-size: 14px; }
@@ -1666,9 +1742,9 @@ button { transition: background-color .12s var(--ease), color .12s var(--ease), 
 /* History controls change height immediately so a prepend needs only one position adjustment. */
 #older, #cachedMore, #historyStatus { transition: none; transform: none; }
 /* The status row also stays visible when only the changed-file count remains. */
-#footerStatus { transition: opacity .18s var(--ease), transform .18s var(--ease), display .18s allow-discrete; }
-#footerStatus:not(:has(#msg:not(:empty):not(.quiet), #termStatus:not([hidden]), #elapsed:not([hidden]), #changeNotice:not([hidden]))) { opacity: 0; transform: translateY(4px); pointer-events: none; }
-@starting-style { #footerStatus:has(#msg:not(:empty):not(.quiet), #termStatus:not([hidden]), #elapsed:not([hidden]), #changeNotice:not([hidden])) { opacity: 0; transform: translateY(4px); } }
+body:not(.chatmode) #footerStatus { transition: opacity .18s var(--ease), transform .18s var(--ease), display .18s allow-discrete; }
+body:not(.chatmode) #footerStatus:not(:has(#msg:not(:empty):not(.quiet), #termStatus:not([hidden]), #elapsed:not([hidden]), #perfChip:not([hidden]), #changeNotice:not([hidden]))) { opacity: 0; transform: translateY(4px); pointer-events: none; }
+@starting-style { body:not(.chatmode) #footerStatus:has(#msg:not(:empty):not(.quiet), #termStatus:not([hidden]), #elapsed:not([hidden]), #perfChip:not([hidden]), #changeNotice:not([hidden])) { opacity: 0; transform: translateY(4px); } }
 
 /* Large centered states: fade only. */
 #empty, #fusionWelcome, #visualEmpty, #termEmpty {
@@ -1752,7 +1828,7 @@ body.conv #overview { display: none; }
 #overview .ov-lv.on { color: var(--accent); }
 #overview .ov-lv.on i { background: var(--accent-tint-2); }
 #overview .ov-favorites-title { color: var(--fg-hi); font-weight: 650; }
-#overview .ov-session { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+#overview :is(.ov-session, .fusion-workbench) { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
 #overview .ov-session :is(input, textarea, [contenteditable], .ov-last, .ov-run-tools, .ov-attachments) { -webkit-touch-callout: default; -webkit-user-select: text; user-select: text; }
 #overview .ov-selected { outline: 2px solid var(--accent); outline-offset: -2px; }
 #overview .ov-selecting > .ov-title { padding-right: 18px; }
@@ -1802,6 +1878,9 @@ body.conv #overview { display: none; }
 .computerFilePath input { flex: 1; min-width: 0; width: 0; min-height: 40px; padding: 8px 10px; border: 1px solid var(--line-2); border-radius: 12px; background: var(--s2); font-size: 14px; color: var(--fg); }
 .computerFilePath button, .computerFileNav button { flex: none; padding: 8px 10px; border-radius: 12px; background: var(--s2); color: var(--fg-2); font-size: 13px; }
 .computerFileNav { display: flex; gap: 8px; }
+.computerFileHidden { position: relative; margin-top: 12px; cursor: pointer; }
+.computerFileHidden input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.computerFileHidden input:focus-visible + .switch { outline: 2px solid var(--accent); outline-offset: 2px; }
 .projectBrowserTools { display: flex; gap: 8px; margin-bottom: 12px; }
 .projectBrowserTools .opt { flex: 1; margin-bottom: 0; border-radius: var(--r-md); box-shadow: none; }
 .computerFileActions { margin-top: 12px; }
@@ -2010,8 +2089,10 @@ body.conv:not(.wide) #ovBack + #title { margin-left: -6px; padding-left: 0; }
 #overview .fusion-board .ov-computer-row small { display: block; color: var(--fg-3); font-size: 11px; }
 #overview .fusion-board .ov-computer-action { padding: 6px 12px; }
 #overview .fusion-workbench.ov-st-wait { border: 2px solid var(--ov-amber); }
-#overview .fusion-workbench .ov-now { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#overview .fusion-workbench .ov-foot { align-items: center; }
+#overview .fusion-workbench.ov-session.ov-compact { grid-template-rows: auto auto 1fr auto; grid-template-areas: "logo title" "logo badge" "context context" "foot foot"; }
+#overview .fusion-workbench.ov-compact > .ov-foot { display: flex; align-items: center; }
+#overview .fusion-workbench .ov-num { font-size: 16px; }
+#overview .fusion-workbench .ov-num small { font-size: 12px; }
 #overview .fusion-workbench .ov-seg { max-width: 64%; }
 #overview .fusion-workbench .fusion-open-feedback:empty { display: none; }
 #overview .ov-fusion-title { flex: none; color: var(--fg-hi); font-size: 17px; }

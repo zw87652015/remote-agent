@@ -7,7 +7,7 @@ const store = {
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const themeName = () => ({ dark: '深色', light: '浅色', auto: '跟随系统' })[store.get('theme') || 'dark'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const APP_VERSION = 'v423'; // keep in sync with the CACHE name in sw.js
+const APP_VERSION = 'v476'; // keep in sync with the CACHE name in sw.js
 
 let base = null, info = null, ws = null, authed = false;
 let windowReady = false;
@@ -40,6 +40,13 @@ const agentListKey = () => (currentComputer()?.key || '') + ':' + currentApp + (
 function receiveAgents(m) {
   if (m.app && m.app !== currentApp) return;
   if (m.sel && m.sel !== viewSel) return;
+  if (m.loading) {
+    if (sheetKind === 'agents') {
+      showAgents(m.list || []);
+      $('sheet').insertAdjacentHTML('afterbegin', `<p class="hint" role="status">${I18N.tr('正在读取原生会话目录，请稍后重试')}</p>`);
+    }
+    return;
+  }
   if (m.error) {
     finishPending(['正在读取 Agent 列表…']);
     if (sheetKind === 'agents') {
@@ -70,7 +77,7 @@ function receiveAgents(m) {
   if (sheetKind === 'agents' && changed) showAgents(list);
 }
 function requestAgentCatalog() {
-  if (mode !== 'terminal' && authed && windowReady && !navigationPending && ['cursor', 'devin', 'codex'].includes(currentApp))
+  if (mode !== 'terminal' && authed && windowReady && !navigationPending && ['cursor', 'devin', 'codex', 'opencode'].includes(currentApp))
     return send({ t: 'agents', automatic: true, silent: true });
 }
 function openAgentList(refresh = false, entry = null) {
@@ -368,7 +375,7 @@ const ACTION_PENDING = new Set([
   '正在新建对话…', '正在切换窗口…', '正在切换 Agent…', '正在切换会话…', '正在读取 Agent 列表…', '正在打开子 Agent…', '返回主对话…',
   '正在切换终端…', '正在删除终端…', '正在新建终端…', '正在读取终端列表…',
   '正在打开项目…', '正在读取项目…', '正在读取文件夹…', '正在读取文档…', '正在保存…',
-  '正在读取设置…', '正在修改…', '正在读取额度…', '正在停止…',
+  '正在读取设置…', '正在修改…', '正在读取额度…', '正在读取上下文…', '正在停止…',
   '正在撤销…', '正在保留…', '处理中…', '正在修改排队消息…',
   '切换 MAX Mode…', '读取模型参数…', '设置中…',
   '读取模式列表…', '读取模型列表…', '读取历史对话…',
@@ -403,11 +410,7 @@ function finishPending(list) {
 
 const desktopRequests = new Map();
 function desktopAction(obj) {
-  if (['overviewManage', 'saveComputerFile', 'computerFileAction', 'newTerminal', 'closeTerminal'].includes(obj.t)) return true;
-  if (currentApp === 'fusion') return false;
-  return obj.t === 'send' ? obj.submit !== false && mode !== 'terminal'
-    : obj.t === 'queue' ? obj.action !== 'read'
-    : ['stop', 'pickMenu', 'question', 'codexRequest', 'click', 'subagent', 'saveFile', 'sessionManage', 'sessionBatch', 'codexRename', 'codexArchive'].includes(obj.t);
+  return RemoteAgentRules.desktopAction(obj, currentApp, mode);
 }
 function sendDesktopOperation(obj, computer = currentComputer()?.id || '', socket = ws, pending = {}) {
   obj.operationId ||= crypto.randomUUID();
@@ -418,14 +421,14 @@ function send(obj, target) {
   if (!['terminals', 'openTerminal', 'closeTerminal', 'newTerminal', 'termWrite', 'termResize', 'termSend', 'termComplete', 'termHistory'].includes(obj.t)) obj.sel ??= viewSel;
   if (['attach', 'openAgent', 'openProject'].includes(obj.t)) beginNavigation(obj, target);
   if (obj.t === 'attach') {
-    const name = {cursor: 'Cursor', devin: 'Devin', codex: 'Codex', fusion: 'Fusion'}[String(obj.id || '').split(':')[0]];
+    const name = {cursor: 'Cursor', devin: 'Devin', codex: 'Codex', fusion: 'Fusion', opencode: 'OpenCode'}[String(obj.id || '').split(':')[0]];
     if (name) $('titleText').textContent = name + '…';
   }
   if (obj.t === 'openMenu') {
     obj.requestId = ++menuRequest;
     menuPending = { requestId: obj.requestId, kind: obj.kind, sel: viewSel };
   }
-  if (obj.t === 'pickMenu' && (obj.kind === 'model' || obj.kind === 'effort' || obj.kind === 'fast')) {
+  if (obj.t === 'pickMenu' && (obj.kind === 'model' || obj.kind === 'effort' || obj.kind === 'fast' || currentApp === 'opencode' && obj.kind === 'permission')) {
     clearSwitchWatch();
     obj.requestId = ++menuPickRequest;
     modelSwitchRequest = { requestId: obj.requestId, sel: viewSel };

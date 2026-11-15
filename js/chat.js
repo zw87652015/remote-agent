@@ -1,6 +1,7 @@
 /* ---------- chat view ---------- */
 const list = $('list'), itemsEl = $('items');
 const cache = new Map();
+const openCodeTools = new Set();
 $('cachedMore').onclick = () => loadOlderMessages();
 itemsEl.addEventListener('click', async e => {
   const copy = e.target.closest('[data-copy-message]');
@@ -24,6 +25,12 @@ itemsEl.addEventListener('click', async e => {
     const box = tr.closest('.toolrow');
     box.classList.add('anim');
     box.classList.toggle('open');
+    if (['opencode', 'codex'].includes(currentApp) && tr.dataset.lazy) {
+      const open = box.classList.contains('open');
+      if (open) openCodeTools.add(box.dataset.i);
+      else openCodeTools.delete(box.dataset.i);
+      send({ t: 'toolDetails', sel: viewSel, i: box.dataset.i, open });
+    }
     const chev = tr.querySelector('.chev');
     if (chev) chev.textContent = box.classList.contains('open') ? '▾' : '▸';
     const hit = cache.get(box.dataset.i);
@@ -46,6 +53,55 @@ itemsEl.addEventListener('click', async e => {
   // Devin thoughts beyond the payload budget arrive title-only; fetch the body on first open.
   if (next && b.dataset.more && !thoughtFull.has(b.dataset.think)) {
     requestThought(b.dataset.think);
+  }
+});
+const openCodeQuestionSubmissions = new Map();
+function captureOpenCodeAnswers(form) {
+  [...form.querySelectorAll('[data-opencode-answer]')].forEach((field, index) => {
+    qnDrafts.set(questionDraftKey(form.dataset.opencodeQuestion, String(index)), {
+      selected: [...field.querySelectorAll('input:checked')].map(input => input.value),
+      custom: field.querySelector('[data-opencode-custom]')?.value || '',
+    });
+  });
+}
+function restoreOpenCodeAnswers(form) {
+  [...form.querySelectorAll('[data-opencode-answer]')].forEach((field, index) => {
+    const draft = qnDrafts.get(questionDraftKey(form.dataset.opencodeQuestion, String(index)));
+    if (!draft) return;
+    field.querySelectorAll('input[type=radio],input[type=checkbox]').forEach(input => { input.checked = draft.selected.includes(input.value); });
+    const custom = field.querySelector('[data-opencode-custom]');
+    if (custom) custom.value = draft.custom;
+  });
+  form.oninput = form.onchange = () => captureOpenCodeAnswers(form);
+}
+function finishOpenCodeQuestion(message) {
+  const pending = openCodeQuestionSubmissions.get(message.requestId);
+  if (!pending || pending.id !== message.id) return;
+  openCodeQuestionSubmissions.delete(message.requestId);
+  if (message.ok) clearQuestionDraft(pending.id, pending.scope);
+  if (pending.scope !== questionScope() || pending.sel !== viewSel) return;
+  const form = [...list.querySelectorAll('[data-opencode-question]')].find(form => form.dataset.opencodeQuestion === pending.id);
+  if (!message.ok) {
+    form?.querySelectorAll('input, button').forEach(node => { node.disabled = false; });
+    status(message.error, false);
+  }
+}
+list.addEventListener('submit', e => {
+  const form = e.target.closest('[data-opencode-question]');
+  if (!form) return;
+  e.preventDefault();
+  captureOpenCodeAnswers(form);
+  const reject = e.submitter?.name === 'reject';
+  const answers = [...form.querySelectorAll('[data-opencode-answer]')].map(field => {
+    const values = [...field.querySelectorAll('input:checked')].map(input => input.value);
+    const custom = field.querySelector('[data-opencode-custom]')?.value.trim();
+    return custom ? field.dataset.multiple === 'true' ? [...values, custom] : [custom] : values;
+  });
+  if (!reject && answers.some(values => !values.length)) return status(I18N.tr('请回答所有问题'), false);
+  const requestId = crypto.randomUUID();
+  if (send({ t: 'opencodeQuestion', id: form.dataset.opencodeQuestion, requestId, answers, reject })) {
+    openCodeQuestionSubmissions.set(requestId, { id: form.dataset.opencodeQuestion, scope: questionScope(), sel: viewSel });
+    form.querySelectorAll('input, button').forEach(input => { input.disabled = true; });
   }
 });
 const thoughtFull = new Map();
@@ -179,18 +235,25 @@ function renderTool(el, it) {
     const path = it.chipFiles?.[index] || (isFile ? fileRef(it.f, it.r) : '');
     return `<code class="chip"${path ? ` data-file="${esc(path)}"` : ''}>${esc(c)}${isFile && it.r ? ' ' + esc(it.r) : ''}</code>`;
   }).join('');
-  if (it.kind === 'command') {
+  if (it.lazy && !it.details) {
+    el.innerHTML = `<div class="trow toggle" data-ttoggle data-lazy="1">${icon}<span class="tl">${esc(it.t)}</span><span class="chev">▸</span></div>`;
+    return;
+  }
+  if (it.kind === 'command' || it.lazy && it.kind !== 'edit') {
     const cmd = it.cmd || '';
     const output = it.output || '';
-    el.innerHTML = `<div class="trow toggle" data-ttoggle>${icon}<span class="tl">${esc(it.t || TOOL_LABEL.command)}</span>${it.d ? `<span class="dur">${esc(it.d)}</span>` : ''}${cmd || output ? '<span class="chev">▸</span>' : ''}</div>`
+    el.innerHTML = `<div class="trow toggle" data-ttoggle${it.lazy ? ' data-lazy="1"' : ''}>${icon}<span class="tl">${esc(it.t || TOOL_LABEL.command)}</span>${it.d ? `<span class="dur">${esc(it.d)}</span>` : ''}${it.lazy || cmd || output ? '<span class="chev">▸</span>' : ''}</div>`
       + (cmd ? `<pre class="tcmd">${esc(cmd)}</pre>` : '')
       + (output ? `<pre class="tcmd">${esc(output)}</pre>` : '');
     return;
   }
   if (it.kind === 'edit') {
+    const stats = it.src === 'codex' && (it.add == null || it.del == null) ? '<span class="stat">差异行数未获取</span>'
+      : it.src === 'codex' && it.add === 0 && it.del === 0 ? '<span class="stat">无文本行变化</span>'
+        : `<span class="stat add">+${it.add || 0}</span><span class="stat del">-${it.del || 0}</span>`;
     const diff = (it.diff || []).map(([ty, text]) => `<div class="dl ${ty === '+' ? 'di' : ty === '-' ? 'dd' : ty === '…' ? 'dm' : ''}">${esc(ty === '…' ? text : ty + ' ' + text)}</div>`).join('');
-    el.innerHTML = `<div class="trow toggle" data-ttoggle>${icon}<span class="tl">${esc(TOOL_LABEL.edit)}</span><code class="chip" data-file="${esc(it.f || '')}">${esc(it.f || '')}</code>`
-      + `<span class="stat add">+${it.add || 0}</span><span class="stat del">-${it.del || 0}</span><span class="chev">▾</span></div>`
+    el.innerHTML = `<div class="trow toggle" data-ttoggle${it.lazy ? ' data-lazy="1"' : ''}>${icon}<span class="tl">${esc(TOOL_LABEL.edit)}</span><code class="chip" data-file="${esc(it.f || '')}">${esc(it.f || '')}</code>`
+      + stats + '<span class="chev">▾</span></div>'
       + `<div class="tdiff">${diff}</div>`;
     return;
   }
@@ -261,7 +324,14 @@ function renderItem(it) {
     if (it.src === 'devin') el.insertAdjacentHTML('beforeend', `<div class="rv"><button class="foldBtn" data-fold="${esc(it.i)}" title="折叠这一轮">▾</button><span class="turnSum"></span><button class="revertBtn" data-revert="${esc(it.i)}">回到这里</button></div>`);
   }
   // it.h comes from the whitelist sanitizer in server/page/common.js (clean): plain tags only, text escaped.
-  else if (it.k === 'assistant') { el.copyText = it.t || ''; el.innerHTML = currentApp === 'codex' ? codexReplyHtml(it) : it.h || ''; dressMessage(el); }
+  else if (it.k === 'assistant') { el.copyText = it.t || ''; el.innerHTML = currentApp === 'codex' || currentApp === 'cursor' && it.bodyFormat === 'markdown' ? codexReplyHtml(it) : currentApp === 'opencode' ? codexMarkdown.render(it.t || '') : it.h || ''; dressMessage(el); }
+  else if (it.k === 'opencodeQuestion') {
+    el.innerHTML = `<form data-opencode-question="${esc(it.requestID)}">${it.questions.map((question, qi) =>
+      `<fieldset data-opencode-answer data-multiple="${question.multiple === true}"><legend class="ovRaw">${esc(question.header)} · ${esc(question.question)}</legend>${question.options.map(option =>
+        `<label class="opencode-option ovRaw"><input type="${question.multiple ? 'checkbox' : 'radio'}" name="answer-${qi}" value="${esc(option.label)}"><span>${esc(option.label)}${option.description ? `<small>${esc(option.description)}</small>` : ''}</span></label>`).join('')}
+      ${question.custom !== false ? '<input data-opencode-custom placeholder="其他回答" aria-label="其他回答">' : ''}</fieldset>`).join('')}
+      <div class="btns"><button type="submit">提交回答</button><button type="submit" name="reject" value="1">拒绝</button></div></form>`;
+  }
   else if (it.k === 'thinking') {
     const lines = String(it.t || '').split('\n');
     el.copyText = lines.length > 1 ? lines.slice(1).join('\n') : (it.t || '');
@@ -269,13 +339,14 @@ function renderItem(it) {
   }
   else if (it.k === 'tool') {
     el.copyText = it.t || '';
-    if (it.kind && (it.src === 'devin' || it.src === 'codex')) { renderTool(el, it); el.classList.add('toolrow'); if (it.kind !== 'command') el.classList.add('open'); }
+    if (it.kind && (it.src === 'devin' || it.src === 'codex' || it.src === 'opencode')) { renderTool(el, it); el.classList.add('toolrow'); if (it.lazy ? openCodeTools.has(it.i) : it.kind !== 'command' || it.keep) el.classList.add('open'); }
     else {
       el.innerHTML = `<div class="txt">${esc(it.t || '')}</div>`;
       if (it.f) el.dataset.file = it.f;
     }
   }
   else el.textContent = it.t || '';
+  if (it.k === 'opencodeQuestion') restoreOpenCodeAnswers(el.querySelector('form'));
   if (it.agents?.length) el.insertAdjacentHTML('beforeend', '<div class="btns agentActions"></div>');
   if (it.images?.length) {
     el.insertAdjacentHTML('beforeend', it.images.filter(src => /^(https?:|data:image\/|chat-image:)/.test(src)).map(src => src.startsWith('chat-image:')
@@ -391,11 +462,18 @@ function updateGenerationTime(chat, stale) {
     generationClocks.set(activeGeneration, { ...clock, busy: !!chat.busy });
   }
 }
-setInterval(paintGenerationTime, 1000);
+setInterval(() => {
+  paintGenerationTime();
+  if (mode === 'chat' && document.visibilityState === 'visible') renderPerfChip(lastChat?.performance);
+}, 1000);
 const chatBySel = new Map(), menuCache = new Map();
 const lruPut = (map, key, val, max) => { map.delete(key); map.set(key, val); while (map.size > max) map.delete(map.keys().next().value); };
 let menuSheetKind = '', chatStale = false;
 let currentProject = '', currentTerminal = '', currentTerminalId = '';
+function modelEffortLabel(model, effort) {
+  return effort && effort !== 'Effort' && !model.toLowerCase().includes(effort.toLowerCase())
+    ? effort.replace(/^([a-z])/, c => c.toUpperCase()) : '';
+}
 function updateTitle() {
   document.body.dataset.app = currentApp || '';
   const first = lastChat?.items?.find(it => it.k === 'user');
@@ -419,8 +497,7 @@ function updateTitle() {
     const mainChat = lastChat?.thread === currentComputer()?.threadId ? lastChat : null;
     const model = mainChat?.model || run?.main.model || '';
     const effort = mainChat?.effort || run?.main.effort || '';
-    const effortLabel = effort && effort !== 'Effort' && !model.toLowerCase().includes(effort.toLowerCase())
-      ? String(effort).replace(/^([a-z])/, c => c.toUpperCase()) : '';
+    const effortLabel = modelEffortLabel(model, effort);
     $('titleText').textContent = run?.title || 'Fusion';
     $('titleProject').textContent = run ? [OV_AGENT[run.main.app], model, effortLabel,
       I18N.tr(({ economy: '省钱', balanced: '均衡', performance: '性能' })[run.tier])].filter(Boolean).join(' · ') : '';
